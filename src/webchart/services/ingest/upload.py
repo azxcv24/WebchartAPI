@@ -1,0 +1,102 @@
+"""Local file upload handler - converts uploaded files to partitioned Parquet."""
+
+import logging
+import uuid
+from pathlib import Path
+
+import dask.dataframe as dd
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+from fastapi import UploadFile
+
+from webchart.config import settings
+from webchart.core.errors import DatasetProcessingError, UnsupportedFormatError
+from webchart.models.dataset import DatasetMeta, DatasetStatus
+from webchart.services.ingest.schema_detect import detect_schema
+
+logger = logging.getLogger("webchart.ingest.upload")
+
+CHUNK_SIZE = 64 * 1024 * 1024  # 64MB read chunks
+
+
+async def save_upload(upload_file: UploadFile) -> Path:
+    """Save uploaded file to a temporary location."""
+    suffix = Path(upload_file.filename or "data").suffix.lower()
+    if suffix not in settings.allowed_upload_extensions:
+        raise UnsupportedFormatError(suffix)
+
+    temp_path = settings.data_dir / "uploads" / f"{uuid.uuid4()}{suffix}"
+    temp_path.parent.mkdir(parents=True, exist_ok=True)
+
+    size = 0
+    with open(temp_path, "wb") as f:
+        while chunk := await upload_file.read(CHUNK_SIZE):
+            size += len(chunk)
+            if size > settings.max_upload_size:
+                temp_path.unlink(missing_ok=True)
+                from webchart.core.errors import FileTooLargeError
+
+                raise FileTooLargeError(size, settings.max_upload_size)
+            f.write(chunk)
+
+    return temp_path
+
+
+def convert_to_parquet(source_path: Path, dataset_id: str) -> DatasetMeta:
+    """Convert a data file to partitioned Parquet and return metadata."""
+    dest_dir = settings.data_dir / "datasets" / dataset_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    suffix = source_path.suffix.lower()
+
+    try:
+        if suffix == ".csv" or suffix == ".tsv":
+            sep = "\t" if suffix == ".tsv" else ","
+            ddf = dd.read_csv(source_path, sep=sep, assume_missing=True)
+        elif suffix == ".parquet":
+            ddf = dd.read_parquet(source_path)
+        elif suffix == ".json":
+            ddf = dd.read_json(source_path)
+        elif suffix == ".xlsx":
+            df = pd.read_excel(source_path)
+            ddf = dd.from_pandas(df, npartitions=max(1, len(df) // 500_000))
+        else:
+            raise UnsupportedFormatError(suffix)
+
+        # Repartition for optimal chunk sizes
+        total_size = source_path.stat().st_size
+        target_partitions = max(1, total_size // (128 * 1024 * 1024))  # ~128MB per partition
+        ddf = ddf.repartition(npartitions=int(target_partitions))
+
+        # Write partitioned Parquet
+        ddf.to_parquet(dest_dir / "data", engine="pyarrow", write_index=False)
+
+        # Detect schema and collect metadata
+        row_count = len(ddf)
+        columns = detect_schema(dest_dir / "data")
+
+        meta = DatasetMeta(
+            dataset_id=dataset_id,
+            name=source_path.stem,
+            status=DatasetStatus.READY,
+            row_count=row_count,
+            size_bytes=total_size,
+            columns=columns,
+            partition_count=int(target_partitions),
+            source_format=suffix.lstrip("."),
+        )
+
+        # Save metadata sidecar
+        meta_path = dest_dir / "meta.json"
+        meta_path.write_text(meta.model_dump_json(indent=2))
+
+        return meta
+
+    except UnsupportedFormatError:
+        raise
+    except Exception as e:
+        raise DatasetProcessingError(f"Failed to convert {source_path.name}: {e}") from e
+    finally:
+        # Clean up temp upload
+        source_path.unlink(missing_ok=True)
