@@ -51,55 +51,69 @@ def _lttb(
     y_column: str,
     target_points: int,
 ) -> pd.DataFrame:
-    """Largest Triangle Three Buckets downsampling.
+    """Largest Triangle Three Buckets downsampling (vectorized).
 
-    Preserves visual shape of the data better than simple decimation.
+    Preserves visual shape better than simple decimation.
     Reference: Sveinn Steinarsson, 2013.
+
+    The bucket selection has a sequential dependency (the previously picked
+    point feeds the next triangle), so the outer loop remains in Python —
+    but the per-bucket triangle-area search is vectorized with NumPy.
     """
     n = len(df)
-    x = df[x_column].values.astype(np.float64)
-    y = df[y_column].values.astype(np.float64)
+    if target_points < 3:
+        # Degenerate: just return endpoints (and one middle if possible)
+        if n <= target_points:
+            return df.copy()
+        idx = list({0, n // 2, n - 1})[:target_points]
+        return df.iloc[sorted(idx)].reset_index(drop=True)
 
-    # Always keep first and last point
-    selected_indices = [0]
+    x = df[x_column].to_numpy(dtype=np.float64, copy=False)
+    y = df[y_column].to_numpy(dtype=np.float64, copy=False)
 
     bucket_size = (n - 2) / (target_points - 2)
 
+    # Bucket edges of length target_points so that bucket k spans [E[k], E[k+1]).
+    # E[0] = 1 (skip the kept first point); E[-1] = n (cap to array length).
+    edges = (np.arange(target_points) * bucket_size).astype(np.int64) + 1
+    edges = np.minimum(edges, n)
+    edges[0] = 1
+    edges[-1] = n
+
+    selected = np.empty(target_points, dtype=np.int64)
+    selected[0] = 0
+    selected[-1] = n - 1
+
     prev_idx = 0
+    for k in range(target_points - 2):
+        bs, be = int(edges[k]), int(edges[k + 1])
+        nbs, nbe = int(edges[k + 1]), int(edges[k + 2])
 
-    for i in range(1, target_points - 1):
-        # Calculate bucket boundaries
-        bucket_start = int((i - 1) * bucket_size) + 1
-        bucket_end = int(i * bucket_size) + 1
-        bucket_end = min(bucket_end, n)
+        if be <= bs:
+            # Empty bucket — repeat previous index
+            selected[k + 1] = prev_idx
+            continue
 
-        next_bucket_start = int(i * bucket_size) + 1
-        next_bucket_end = int((i + 1) * bucket_size) + 1
-        next_bucket_end = min(next_bucket_end, n)
+        if nbe > nbs:
+            avg_x = x[nbs:nbe].mean()
+            avg_y = y[nbs:nbe].mean()
+        else:
+            avg_x = x[-1]
+            avg_y = y[-1]
 
-        # Average point in next bucket
-        avg_x = np.mean(x[next_bucket_start:next_bucket_end])
-        avg_y = np.mean(y[next_bucket_start:next_bucket_end])
+        # Vectorized triangle-area over current bucket
+        cx = x[bs:be]
+        cy = y[bs:be]
+        area = np.abs(
+            (x[prev_idx] - avg_x) * (cy - y[prev_idx])
+            - (x[prev_idx] - cx) * (avg_y - y[prev_idx])
+        )
+        max_offset = int(np.argmax(area))
+        chosen = bs + max_offset
+        selected[k + 1] = chosen
+        prev_idx = chosen
 
-        # Find point in current bucket with largest triangle area
-        max_area = -1.0
-        max_idx = bucket_start
-
-        for j in range(bucket_start, bucket_end):
-            area = abs(
-                (x[prev_idx] - avg_x) * (y[j] - y[prev_idx])
-                - (x[prev_idx] - x[j]) * (avg_y - y[prev_idx])
-            )
-            if area > max_area:
-                max_area = area
-                max_idx = j
-
-        selected_indices.append(max_idx)
-        prev_idx = max_idx
-
-    selected_indices.append(n - 1)
-
-    return df.iloc[selected_indices].reset_index(drop=True)
+    return df.iloc[selected].reset_index(drop=True)
 
 
 def _minmax(
