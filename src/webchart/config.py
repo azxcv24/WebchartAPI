@@ -38,5 +38,10 @@ class Settings(BaseSettings):
     # Supported formats
     allowed_upload_extensions: list[str] = [".csv", ".parquet", ".json", ".xlsx", ".tsv"]
 
+    # CORS — explicit allow-list. When credentials are enabled, "*" is invalid
+    # per the CORS spec, so callers must list concrete origins.
+    cors_allow_origins: list[str] = ["http://localhost:3000"]
+    cors_allow_credentials: bool = False
+
 
 settings = Settings()
