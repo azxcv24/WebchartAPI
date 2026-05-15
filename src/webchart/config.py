@@ -17,7 +17,11 @@ class Settings(BaseSettings):
     # Data storage
     data_dir: Path = Path("/data/webchart")
     max_upload_size: int = 10 * 1024 * 1024 * 1024  # 10GB
+    max_xlsx_upload_size: int = 200 * 1024 * 1024  # 200MB - xlsx is not chunked
     parquet_partition_size: str = "128MB"
+
+    # Query guards
+    max_query_rows: int = 5_000_000  # cap on read_window result size
 
     # Rendering
     render_pool_size: int = 8

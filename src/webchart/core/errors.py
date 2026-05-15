@@ -48,6 +48,14 @@ class FileTooLargeError(WebchartError):
         )
 
 
+class QueryTooLargeError(WebchartError):
+    def __init__(self, row_count: int, max_rows: int):
+        super().__init__(
+            f"Query would return {row_count} rows (max {max_rows}); narrow the range",
+            "QUERY_TOO_LARGE",
+        )
+
+
 def webchart_error_to_http(err: WebchartError) -> HTTPException:
     """Convert a WebchartError to an appropriate HTTPException."""
     status_map = {
@@ -56,6 +64,7 @@ def webchart_error_to_http(err: WebchartError) -> HTTPException:
         "UNSUPPORTED_FORMAT": status.HTTP_400_BAD_REQUEST,
         "PROTOCOL_NOT_SUPPORTED": status.HTTP_400_BAD_REQUEST,
         "FILE_TOO_LARGE": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        "QUERY_TOO_LARGE": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         "DATASET_PROCESSING_ERROR": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "RENDER_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     }

@@ -8,7 +8,7 @@ import dask.dataframe as dd
 import pandas as pd
 
 from webchart.config import settings
-from webchart.core.errors import DatasetNotFoundError
+from webchart.core.errors import DatasetNotFoundError, QueryTooLargeError
 from webchart.models.dataset import DatasetMeta
 
 logger = logging.getLogger("webchart.data.access")
@@ -39,6 +39,7 @@ def read_window(
     x_column: str,
     x_range: tuple[float, float] | None = None,
     columns: list[str] | None = None,
+    max_rows: int | None = None,
 ) -> pd.DataFrame:
     """Read a windowed subset of the dataset, computed eagerly into a Pandas DataFrame.
 
@@ -47,6 +48,8 @@ def read_window(
         x_column: Column to filter on (typically the x-axis)
         x_range: (min, max) range filter on x_column
         columns: Specific columns to read (None = all)
+        max_rows: Hard cap; defaults to settings.max_query_rows. Raises
+            QueryTooLargeError if the filtered result would exceed it.
     """
     ddf = read_full(dataset_id)
 
@@ -62,8 +65,20 @@ def read_window(
         x_min, x_max = x_range
         ddf = ddf[(ddf[x_column] >= x_min) & (ddf[x_column] <= x_max)]
 
+    cap = max_rows if max_rows is not None else settings.max_query_rows
+
+    # Cheap pre-check using partition counts before materializing
+    try:
+        approx_count = int(ddf.shape[0].compute())
+    except Exception:
+        approx_count = -1
+    if 0 <= cap < approx_count:
+        raise QueryTooLargeError(approx_count, cap)
+
     # Sort by x_column and compute
     result = ddf.compute()
+    if len(result) > cap:
+        raise QueryTooLargeError(len(result), cap)
     result = result.sort_values(x_column).reset_index(drop=True)
 
     return result
