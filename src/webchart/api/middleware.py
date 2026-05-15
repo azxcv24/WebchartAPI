@@ -1,24 +1,29 @@
 """Application middleware."""
 
+import logging
 import time
 import uuid
-import logging
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from webchart.core.logging import request_id_var
+
 logger = logging.getLogger("webchart.middleware")
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Add unique request ID to each request."""
+    """Add unique request ID to each request and propagate it to log records."""
 
     async def dispatch(self, request: Request, call_next):
         request_id = str(uuid.uuid4())[:8]
         request.state.request_id = request_id
-
-        response: Response = await call_next(request)
+        token = request_id_var.set(request_id)
+        try:
+            response: Response = await call_next(request)
+        finally:
+            request_id_var.reset(token)
         response.headers["X-Request-Id"] = request_id
         return response
 
