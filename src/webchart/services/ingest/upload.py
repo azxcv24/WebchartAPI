@@ -66,6 +66,13 @@ async def save_upload(upload_file: UploadFile) -> Path:
     if suffix not in settings.allowed_upload_extensions:
         raise UnsupportedFormatError(suffix)
 
+    # xlsx parsing is not chunked (pd.read_excel loads the whole sheet),
+    # so cap it tighter than the generic max_upload_size.
+    if suffix == ".xlsx":
+        size_limit = min(settings.max_upload_size, settings.max_xlsx_upload_size)
+    else:
+        size_limit = settings.max_upload_size
+
     temp_path = settings.data_dir / "uploads" / f"{uuid.uuid4()}{suffix}"
     temp_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -73,11 +80,11 @@ async def save_upload(upload_file: UploadFile) -> Path:
     with open(temp_path, "wb") as f:
         while chunk := await upload_file.read(CHUNK_SIZE):
             size += len(chunk)
-            if size > settings.max_upload_size:
+            if size > size_limit:
                 temp_path.unlink(missing_ok=True)
                 from webchart.core.errors import FileTooLargeError
 
-                raise FileTooLargeError(size, settings.max_upload_size)
+                raise FileTooLargeError(size, size_limit)
             f.write(chunk)
 
     return temp_path
