@@ -160,8 +160,17 @@ async def preview_dataset(
 
 @router.delete("/{dataset_id}", status_code=204)
 async def delete_dataset(dataset_id: str):
-    """Delete a dataset."""
+    """Delete a dataset and any sessions referencing it."""
+    from webchart.cache.redis_cache import delete_sessions_for_dataset
+
     try:
         access.delete_dataset(dataset_id)
     except WebchartError as e:
         raise webchart_error_to_http(e)
+
+    try:
+        removed = await delete_sessions_for_dataset(dataset_id)
+        if removed:
+            logger.info(f"Removed {removed} session(s) referencing {dataset_id}")
+    except Exception as e:
+        logger.warning(f"Failed to purge sessions for {dataset_id}: {e}")

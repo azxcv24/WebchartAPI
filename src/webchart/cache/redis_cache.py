@@ -116,6 +116,24 @@ async def refresh_session_ttl(session_id: str, ttl: int | None = None) -> None:
     await r.expire(session_key(session_id), ttl or settings.session_ttl)
 
 
+async def delete_sessions_for_dataset(dataset_id: str) -> int:
+    """Delete every session that references a given dataset. Returns count."""
+    r = await get_redis()
+    deleted = 0
+    async for raw_key in r.scan_iter(match="session:*"):
+        data = await r.get(raw_key)
+        if data is None:
+            continue
+        try:
+            state = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        if state.get("dataset_id") == dataset_id:
+            await r.delete(raw_key)
+            deleted += 1
+    return deleted
+
+
 # --- Utility ---
 
 def chart_spec_hash(spec: dict[str, Any]) -> str:
