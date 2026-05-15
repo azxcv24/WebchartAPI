@@ -8,9 +8,9 @@ from webchart.models.chart import ChartSpec
 class ViewportWindow(BaseModel):
     x_range: tuple[float, float]
     y_range: tuple[float, float] | None = None
-    zoom: int = 0
-    pixel_width: int = 1200
-    pixel_height: int = 600
+    zoom: int = Field(default=0, ge=0, le=24)
+    pixel_width: int = Field(default=1200, ge=64, le=8192)
+    pixel_height: int = Field(default=600, ge=64, le=8192)
 
 
 class SessionCreate(BaseModel):

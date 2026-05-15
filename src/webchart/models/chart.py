@@ -41,8 +41,8 @@ class ChartSpec(BaseModel):
     y_axis: AxisConfig | None = None
     y_columns: list[str] = Field(default_factory=list)
     series: list[SeriesConfig] = Field(default_factory=list)
-    width: int = 1200
-    height: int = 600
+    width: int = Field(default=1200, ge=64, le=8192)
+    height: int = Field(default=600, ge=64, le=8192)
     format: ImageFormat = ImageFormat.PNG
     background_color: str = "#ffffff"
     grid: bool = True
