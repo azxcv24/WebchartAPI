@@ -17,6 +17,12 @@ class ImageFormat(str, Enum):
     WEBP = "webp"
 
 
+class DownsampleAlgorithm(str, Enum):
+    LTTB = "lttb"
+    MINMAX = "minmax"
+    AVERAGE = "average"
+
+
 class AxisConfig(BaseModel):
     column: str
     label: str | None = None
@@ -47,7 +53,7 @@ class ChartSpec(BaseModel):
     background_color: str = "#ffffff"
     grid: bool = True
     legend: bool = True
-    downsample_algorithm: str = "lttb"  # lttb, minmax, average
+    downsample_algorithm: DownsampleAlgorithm = DownsampleAlgorithm.LTTB
 
 
 class RenderResult(BaseModel):
