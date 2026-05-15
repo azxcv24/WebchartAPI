@@ -47,5 +47,11 @@ class Settings(BaseSettings):
     api_keys: list[str] = []
     api_key_header: str = "X-API-Key"
 
+    # Rate limiting (per API key, or per client IP when auth is off).
+    # In-memory limiter scoped to the worker process; for multi-worker setups
+    # pair with a sticky-session LB or swap in a Redis-backed limiter.
+    rate_limit_per_minute: int = 120
+    rate_limit_enabled: bool = True
+
 
 settings = Settings()

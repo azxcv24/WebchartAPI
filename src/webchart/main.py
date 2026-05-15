@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from webchart.api.middleware import RequestIdMiddleware, TimingMiddleware
+from webchart.api.middleware import RateLimitMiddleware, RequestIdMiddleware, TimingMiddleware
 from webchart.api.router import api_router
 from webchart.cache.redis_cache import close_redis, init_redis
 from webchart.config import settings
@@ -56,6 +56,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(TimingMiddleware)
+    app.add_middleware(
+        RateLimitMiddleware,
+        requests_per_minute=settings.rate_limit_per_minute,
+    )
     app.add_middleware(RequestIdMiddleware)
 
     # Routes
