@@ -1,28 +1,40 @@
-"""Matplotlib-based chart renderer for static images and tiles."""
+"""Matplotlib-based chart renderer for static images and tiles.
+
+Uses the object-oriented Figure/FigureCanvas API (not pyplot) so multiple
+renderer instances and threads do not contend on pyplot's global figure
+manager. With Agg/SVG canvases the per-figure work is independent.
+"""
 
 import io
 import logging
 
 import matplotlib
-import matplotlib.pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.backends.backend_svg import FigureCanvasSVG
+from matplotlib.figure import Figure
 import pandas as pd
 
 from webchart.models.chart import ChartSpec, ChartType, ImageFormat
 
-matplotlib.use("Agg")  # Non-interactive backend
+matplotlib.use("Agg")  # Default backend; we still construct canvases explicitly
 
 logger = logging.getLogger("webchart.render.matplotlib")
 
 
+def _canvas_for(fig: Figure, fmt: ImageFormat) -> FigureCanvasAgg | FigureCanvasSVG:
+    if fmt == ImageFormat.SVG:
+        return FigureCanvasSVG(fig)
+    return FigureCanvasAgg(fig)
+
+
 class MatplotlibRenderer:
-    """Renders charts using Matplotlib. Thread-safe with Agg backend."""
+    """Renders charts using Matplotlib via the OO API (thread-safe)."""
 
     def render(self, spec: ChartSpec, data: pd.DataFrame) -> bytes:
         """Render a full chart to image bytes."""
-        fig, ax = plt.subplots(
-            figsize=(spec.width / 100, spec.height / 100),
-            dpi=100,
-        )
+        fig = Figure(figsize=(spec.width / 100, spec.height / 100), dpi=100)
+        canvas = _canvas_for(fig, spec.format)
+        ax = fig.add_subplot(111)
         fig.patch.set_facecolor(spec.background_color)
         ax.set_facecolor(spec.background_color)
 
@@ -32,7 +44,7 @@ class MatplotlibRenderer:
         buf = io.BytesIO()
         fmt = self._to_mpl_format(spec.format)
         fig.savefig(buf, format=fmt, bbox_inches="tight", facecolor=fig.get_facecolor())
-        plt.close(fig)
+        del canvas
 
         buf.seek(0)
         return buf.read()
@@ -49,11 +61,12 @@ class MatplotlibRenderer:
     ) -> bytes:
         """Render a single tile (no axes, no labels, transparent padding)."""
         dpi = 100
-        fig, ax = plt.subplots(figsize=(tile_size / dpi, tile_size / dpi), dpi=dpi)
+        fig = Figure(figsize=(tile_size / dpi, tile_size / dpi), dpi=dpi)
+        canvas = FigureCanvasAgg(fig)
+        ax = fig.add_subplot(111)
         fig.patch.set_alpha(0)
         ax.set_facecolor("white")
 
-        # Remove all margins and decorations
         ax.set_axis_off()
         fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
 
@@ -69,13 +82,12 @@ class MatplotlibRenderer:
 
         buf = io.BytesIO()
         fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0)
-        plt.close(fig)
+        del canvas
 
         buf.seek(0)
         return buf.read()
 
-    def _draw_chart(self, ax: plt.Axes, spec: ChartSpec, data: pd.DataFrame) -> None:
-        """Draw chart content based on chart type."""
+    def _draw_chart(self, ax, spec: ChartSpec, data: pd.DataFrame) -> None:
         x_col = spec.x_axis.column
 
         if spec.series:
@@ -94,7 +106,7 @@ class MatplotlibRenderer:
 
     def _draw_series(
         self,
-        ax: plt.Axes,
+        ax,
         data: pd.DataFrame,
         x_col: str,
         y_col: str,
@@ -105,7 +117,6 @@ class MatplotlibRenderer:
         alpha: float = 1.0,
         marker_size: float | None = None,
     ) -> None:
-        """Draw a single series on the axes."""
         if x_col not in data.columns or y_col not in data.columns:
             return
 
@@ -133,17 +144,14 @@ class MatplotlibRenderer:
             ax.scatter(x, y, s=s, **kwargs)
 
         elif chart_type == ChartType.HEATMAP:
-            # For heatmap, pivot data and use imshow
             logger.warning("Heatmap requires pivoted data, falling back to scatter")
             ax.scatter(x, y, **kwargs)
 
         elif chart_type == ChartType.CANDLESTICK:
-            # Basic OHLC rendering
             logger.warning("Candlestick requires OHLC columns, falling back to line")
             ax.plot(x, y, **kwargs)
 
-    def _apply_styling(self, ax: plt.Axes, spec: ChartSpec) -> None:
-        """Apply chart styling (title, labels, grid, legend)."""
+    def _apply_styling(self, ax, spec: ChartSpec) -> None:
         if spec.title:
             ax.set_title(spec.title)
 
