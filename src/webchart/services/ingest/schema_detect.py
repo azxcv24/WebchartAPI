@@ -77,10 +77,17 @@ def _fill_statistics(col_info: ColumnInfo, parquet_dir: Path, col_name: str) -> 
 
 
 def _find_column_index(meta: pq.FileMetaData, col_name: str) -> int | None:
-    """Find column index in Parquet schema by name."""
+    """Find column index in Parquet physical schema by top-level field name.
+
+    Parquet's physical schema is the leaf-flattened view (nested struct
+    fields appear as `parent.child`). Match either the full path or the
+    top-level component so callers can pass Arrow field names directly.
+    """
     schema = meta.schema
     for i in range(schema.length):
-        if schema.column(i).name == col_name:
+        col = schema.column(i)
+        path = col.path  # e.g. "a.b" for nested
+        if path == col_name or path.split(".")[0] == col_name:
             return i
     return None
 
