@@ -4,6 +4,7 @@ import json
 import logging
 import struct
 
+from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from webchart.cache.redis_cache import tile_spec_hash
@@ -11,9 +12,12 @@ from webchart.models.session import ViewportWindow
 from webchart.models.ws_messages import (
     ErrorMessage,
     HoverDataMessage,
+    HoverMessage,
+    ScrollMessage,
     TileInfo,
     TilesMetaMessage,
     ViewportAckMessage,
+    ViewportChangeMessage,
 )
 from webchart.services.render.tile_renderer import render_visible_tiles
 from webchart.services.session.interaction import resolve_hover
@@ -40,21 +44,38 @@ async def handle_ws_session(websocket: WebSocket, session_id: str) -> None:
     try:
         while True:
             raw = await websocket.receive_text()
-            msg = json.loads(raw)
-            msg_type = msg.get("type", "")
+            try:
+                msg = json.loads(raw)
+            except json.JSONDecodeError as e:
+                await websocket.send_json(
+                    ErrorMessage(code="INVALID_JSON", message=str(e)).model_dump()
+                )
+                continue
 
-            if msg_type == "viewport_change":
-                await _handle_viewport_change(websocket, session_id, msg)
-            elif msg_type == "hover":
-                await _handle_hover(websocket, session_id, msg)
-            elif msg_type == "scroll":
-                await _handle_scroll(websocket, session_id, msg)
-            elif msg_type == "ping":
-                await websocket.send_json({"type": "pong"})
-            else:
+            msg_type = msg.get("type", "")
+            try:
+                if msg_type == "viewport_change":
+                    parsed = ViewportChangeMessage.model_validate(msg)
+                    await _handle_viewport_change(websocket, session_id, parsed)
+                elif msg_type == "hover":
+                    parsed_hover = HoverMessage.model_validate(msg)
+                    await _handle_hover(websocket, session_id, parsed_hover)
+                elif msg_type == "scroll":
+                    parsed_scroll = ScrollMessage.model_validate(msg)
+                    await _handle_scroll(websocket, session_id, parsed_scroll)
+                elif msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+                else:
+                    await websocket.send_json(
+                        ErrorMessage(
+                            code="UNKNOWN_MESSAGE",
+                            message=f"Unknown type: {msg_type}",
+                        ).model_dump()
+                    )
+            except ValidationError as e:
                 await websocket.send_json(
                     ErrorMessage(
-                        code="UNKNOWN_MESSAGE", message=f"Unknown type: {msg_type}"
+                        code="INVALID_MESSAGE", message=e.errors(include_url=False).__str__()
                     ).model_dump()
                 )
 
@@ -73,18 +94,18 @@ async def handle_ws_session(websocket: WebSocket, session_id: str) -> None:
 async def _handle_viewport_change(
     websocket: WebSocket,
     session_id: str,
-    msg: dict,
+    msg: ViewportChangeMessage,
 ) -> None:
     """Handle viewport change: compute and stream tiles."""
     # Preserve existing viewport pixel dimensions if the message omits them
     # (e.g. when called from the scroll handler) so hover→pixel math stays correct.
     existing = (await get_session(session_id)).viewport
     viewport = ViewportWindow(
-        x_range=tuple(msg["x_range"]),
-        y_range=tuple(msg["y_range"]) if msg.get("y_range") else existing.y_range,
-        zoom=msg.get("zoom", existing.zoom),
-        pixel_width=msg.get("pixel_width", existing.pixel_width),
-        pixel_height=msg.get("pixel_height", existing.pixel_height),
+        x_range=msg.x_range,
+        y_range=msg.y_range if msg.y_range is not None else existing.y_range,
+        zoom=msg.zoom,
+        pixel_width=existing.pixel_width,
+        pixel_height=existing.pixel_height,
     )
 
     state = await update_viewport(session_id, viewport)
@@ -135,11 +156,11 @@ async def _handle_viewport_change(
 async def _handle_hover(
     websocket: WebSocket,
     session_id: str,
-    msg: dict,
+    msg: HoverMessage,
 ) -> None:
     """Handle hover event: resolve nearest data point."""
     state = await get_session(session_id)
-    result = await resolve_hover(state, msg["pixel_x"], msg["pixel_y"])
+    result = await resolve_hover(state, msg.pixel_x, msg.pixel_y)
 
     if result:
         await websocket.send_json(result.model_dump())
@@ -148,42 +169,30 @@ async def _handle_hover(
 async def _handle_scroll(
     websocket: WebSocket,
     session_id: str,
-    msg: dict,
+    msg: ScrollMessage,
 ) -> None:
     """Handle scroll: shift viewport and send new edge tiles."""
     state = await get_session(session_id)
     vp = state.viewport
 
-    delta = msg.get("delta", 100)
-    direction = msg.get("direction", "right")
-
     # Compute viewport shift in data space
     x_range_width = vp.x_range[1] - vp.x_range[0]
-    shift_ratio = delta / vp.pixel_width if vp.pixel_width else 0.1
+    shift_ratio = msg.delta / vp.pixel_width if vp.pixel_width else 0.1
     shift = x_range_width * shift_ratio
 
-    if direction == "right":
+    if msg.direction == "right":
         new_x_range = (vp.x_range[0] + shift, vp.x_range[1] + shift)
-    elif direction == "left":
+    elif msg.direction == "left":
         new_x_range = (vp.x_range[0] - shift, vp.x_range[1] - shift)
     else:
         new_x_range = vp.x_range
 
-    # Update and send new tiles
-    new_viewport = ViewportWindow(
-        x_range=new_x_range,
-        y_range=vp.y_range,
-        zoom=vp.zoom,
-        pixel_width=vp.pixel_width,
-        pixel_height=vp.pixel_height,
-    )
-
     await _handle_viewport_change(
         websocket,
         session_id,
-        {
-            "x_range": list(new_x_range),
-            "y_range": list(vp.y_range) if vp.y_range else None,
-            "zoom": vp.zoom,
-        },
+        ViewportChangeMessage(
+            x_range=new_x_range,
+            y_range=vp.y_range,
+            zoom=vp.zoom,
+        ),
     )
