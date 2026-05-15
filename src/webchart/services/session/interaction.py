@@ -70,13 +70,29 @@ async def resolve_hover(
         return None
 
     # Find nearest point by x distance
-    distances = (data[x_col].astype(float) - data_x).abs()
+    try:
+        x_numeric = data[x_col].astype(float)
+    except (TypeError, ValueError):
+        # Non-numeric x (timestamp, string): use the raw column for comparison
+        x_numeric = pd.to_datetime(data[x_col], errors="coerce").astype("int64", copy=False)
+    distances = (x_numeric - data_x).abs()
     nearest_idx = distances.idxmin()
     nearest_row = data.loc[nearest_idx]
 
+    raw_x = nearest_row[x_col]
+    try:
+        label_x = f"{float(raw_x):.4g}"
+    except (TypeError, ValueError):
+        label_x = str(raw_x)
+
+    try:
+        data_x_out = float(raw_x)
+    except (TypeError, ValueError):
+        data_x_out = float(x_numeric.loc[nearest_idx])
+
     return HoverDataMessage(
-        data_x=float(nearest_row[x_col]),
+        data_x=data_x_out,
         data_y=float(nearest_row[primary_y]),
         series=primary_y,
-        label=f"{x_col}={nearest_row[x_col]:.4g}",
+        label=f"{x_col}={label_x}",
     )
