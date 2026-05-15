@@ -1,7 +1,6 @@
 """Local filesystem ingest backend."""
 
 import shutil
-import uuid
 from pathlib import Path
 
 from webchart.config import settings
@@ -23,8 +22,10 @@ class LocalIngestBackend:
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         source_path = Path(spec.uri.replace("file://", ""))
 
-        # Copy to temp location for processing
-        dataset_id = str(uuid.uuid4())
+        # The dataset_id is encoded in `dest` (data_dir/datasets/<dataset_id>);
+        # honor it instead of minting a new one so the caller's response id
+        # matches the on-disk dataset.
+        dataset_id = dest.name
         temp_path = settings.data_dir / "uploads" / f"{dataset_id}{source_path.suffix}"
         temp_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_path, temp_path)
