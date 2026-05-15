@@ -7,6 +7,7 @@ import struct
 from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from webchart.api.auth import hash_api_key, ws_api_key
 from webchart.cache.redis_cache import tile_spec_hash
 from webchart.models.session import ViewportWindow
 from webchart.models.ws_messages import (
@@ -38,6 +39,16 @@ async def handle_ws_session(websocket: WebSocket, session_id: str) -> None:
         )
         await websocket.close()
         return
+
+    # Owner check: if the session recorded a key hash at creation, the
+    # caller must present the same key. (None hash means auth was off.)
+    if state.owner_key_hash is not None:
+        if hash_api_key(ws_api_key(websocket)) != state.owner_key_hash:
+            await websocket.send_json(
+                ErrorMessage(code="FORBIDDEN", message="Session belongs to another caller").model_dump()
+            )
+            await websocket.close(code=4403)
+            return
 
     logger.info(f"WebSocket connected for session {session_id}")
 

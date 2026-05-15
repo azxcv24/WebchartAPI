@@ -1,5 +1,6 @@
 """API key authentication for HTTP and WebSocket routes."""
 
+import hashlib
 import hmac
 import logging
 
@@ -9,6 +10,20 @@ from starlette.websockets import WebSocket
 from webchart.config import settings
 
 logger = logging.getLogger("webchart.auth")
+
+
+def hash_api_key(key: str | None) -> str | None:
+    """Return a stable hash so we can store/compare keys without retaining them."""
+    if not key:
+        return None
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def ws_api_key(websocket: WebSocket) -> str | None:
+    return (
+        websocket.headers.get(settings.api_key_header.lower())
+        or websocket.query_params.get("api_key")
+    )
 
 
 def _key_is_valid(candidate: str | None) -> bool:
@@ -41,10 +56,7 @@ async def require_api_key_ws(websocket: WebSocket) -> bool:
     """
     if not settings.api_keys:
         return True
-    candidate = (
-        websocket.headers.get(settings.api_key_header.lower())
-        or websocket.query_params.get("api_key")
-    )
+    candidate = ws_api_key(websocket)
     if not _key_is_valid(candidate):
         await websocket.close(code=4401, reason="invalid api key")
         return False

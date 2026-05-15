@@ -16,6 +16,7 @@ async def create_session(
     dataset_id: str,
     chart_config: ChartSpec,
     viewport: ViewportWindow,
+    owner_key_hash: str | None = None,
 ) -> SessionState:
     """Create a new interactive chart session."""
     session_id = str(uuid.uuid4())
@@ -25,6 +26,7 @@ async def create_session(
         dataset_id=dataset_id,
         chart_config=chart_config,
         viewport=viewport,
+        owner_key_hash=owner_key_hash,
     )
 
     await redis_cache.set_session(session_id, state.model_dump())

@@ -28,6 +28,7 @@ class SessionState(BaseModel):
     dataset_id: str
     chart_config: ChartSpec
     viewport: ViewportWindow
+    owner_key_hash: str | None = None  # sha256 of the creating API key
     created_at: datetime = Field(default_factory=_utcnow)
     last_active: datetime = Field(default_factory=_utcnow)
 
