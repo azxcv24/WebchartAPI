@@ -66,23 +66,6 @@ async def get_tiles_multi(keys: list[str]) -> dict[str, bytes | None]:
     return dict(zip(keys, values))
 
 
-# --- Query Cache ---
-
-def query_key(dataset_id: str, x_range: tuple[float, float], algo: str, target_n: int) -> str:
-    range_hash = hashlib.md5(f"{x_range[0]}:{x_range[1]}".encode()).hexdigest()[:8]
-    return f"query:{dataset_id}:{range_hash}:{algo}:{target_n}"
-
-
-async def get_query_cache(key: str) -> bytes | None:
-    r = await get_redis()
-    return await r.get(key)
-
-
-async def set_query_cache(key: str, data: bytes, ttl: int | None = None) -> None:
-    r = await get_redis()
-    await r.set(key, data, ex=ttl or settings.query_cache_ttl)
-
-
 # --- Session Cache ---
 
 def session_key(session_id: str) -> str:

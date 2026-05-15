@@ -18,12 +18,6 @@ class HoverMessage(BaseModel):
     pixel_y: float
 
 
-class ClickMessage(BaseModel):
-    type: str = "click"
-    pixel_x: float
-    pixel_y: float
-
-
 class ScrollMessage(BaseModel):
     type: str = "scroll"
     direction: str  # left, right, up, down
@@ -57,15 +51,6 @@ class HoverDataMessage(BaseModel):
     series: str
     label: str = ""
     extra: dict[str, object] | None = None
-
-
-class OverlayMessage(BaseModel):
-    type: str = "overlay"
-    base64_png: str
-    x: int
-    y: int
-    width: int
-    height: int
 
 
 class ViewportAckMessage(BaseModel):

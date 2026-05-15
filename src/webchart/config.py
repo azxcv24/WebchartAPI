@@ -32,7 +32,6 @@ class Settings(BaseSettings):
 
     # Cache TTL (seconds)
     tile_cache_ttl: int = 3600
-    query_cache_ttl: int = 1800
     session_ttl: int = 900
 
     # Supported formats
