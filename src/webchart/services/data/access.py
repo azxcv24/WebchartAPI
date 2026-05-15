@@ -85,15 +85,9 @@ def read_window(
 
 
 def read_sample(dataset_id: str, n: int = 100) -> pd.DataFrame:
-    """Read a random sample of n rows."""
+    """Read the first n rows for preview. Cheap: only touches the head partition."""
     ddf = read_full(dataset_id)
-    total = len(ddf)
-    frac = min(1.0, (n * 3) / total) if total > 0 else 1.0  # oversample then trim
-
-    sample = ddf.sample(frac=frac).compute()
-    if len(sample) > n:
-        sample = sample.head(n)
-    return sample
+    return ddf.head(n, compute=True)
 
 
 def count_rows(dataset_id: str) -> int:
