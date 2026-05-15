@@ -76,10 +76,15 @@ async def _handle_viewport_change(
     msg: dict,
 ) -> None:
     """Handle viewport change: compute and stream tiles."""
+    # Preserve existing viewport pixel dimensions if the message omits them
+    # (e.g. when called from the scroll handler) so hover→pixel math stays correct.
+    existing = (await get_session(session_id)).viewport
     viewport = ViewportWindow(
         x_range=tuple(msg["x_range"]),
-        y_range=tuple(msg["y_range"]) if msg.get("y_range") else None,
-        zoom=msg.get("zoom", 0),
+        y_range=tuple(msg["y_range"]) if msg.get("y_range") else existing.y_range,
+        zoom=msg.get("zoom", existing.zoom),
+        pixel_width=msg.get("pixel_width", existing.pixel_width),
+        pixel_height=msg.get("pixel_height", existing.pixel_height),
     )
 
     state = await update_viewport(session_id, viewport)
