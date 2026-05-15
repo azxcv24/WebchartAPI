@@ -112,8 +112,16 @@ def convert_to_parquet(source_path: Path, dataset_id: str) -> DatasetMeta:
         # Write partitioned Parquet
         ddf.to_parquet(dest_dir / "data", engine="pyarrow", write_index=False)
 
-        # Detect schema and collect metadata
-        row_count = len(ddf)
+        # Row count from Parquet metadata (fast: aggregates row group counts)
+        # rather than triggering a full Dask scan via len(ddf).
+        try:
+            row_count = pq.ParquetDataset(dest_dir / "data").count_rows()
+        except Exception:
+            # Older pyarrow: sum row groups manually
+            row_count = sum(
+                pq.ParquetFile(p).metadata.num_rows
+                for p in (dest_dir / "data").glob("*.parquet")
+            )
         columns = detect_schema(dest_dir / "data")
 
         meta = DatasetMeta(
