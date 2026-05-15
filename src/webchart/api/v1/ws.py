@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 from starlette.websockets import WebSocket
 
+from webchart.api.auth import require_api_key_ws
 from webchart.services.session.stream import handle_ws_session
 
 router = APIRouter(tags=["websocket"])
@@ -11,4 +12,6 @@ router = APIRouter(tags=["websocket"])
 @router.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
     """WebSocket endpoint for real-time chart interaction."""
+    if not await require_api_key_ws(websocket):
+        return
     await handle_ws_session(websocket, session_id)

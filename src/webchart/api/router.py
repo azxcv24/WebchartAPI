@@ -1,12 +1,18 @@
 """Top-level router aggregation."""
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from webchart.api.auth import require_api_key
 from webchart.api.v1 import charts, datasets, sessions, ws
 
+# HTTP routes share the api-key dependency. The WebSocket route uses its
+# own check (require_api_key_ws) since header auth is awkward in browsers.
 api_router = APIRouter(prefix="/api/v1")
+http_router = APIRouter(dependencies=[Depends(require_api_key)])
 
-api_router.include_router(datasets.router)
-api_router.include_router(charts.router)
-api_router.include_router(sessions.router)
+http_router.include_router(datasets.router)
+http_router.include_router(charts.router)
+http_router.include_router(sessions.router)
+
+api_router.include_router(http_router)
 api_router.include_router(ws.router)

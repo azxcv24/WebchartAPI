@@ -42,5 +42,10 @@ class Settings(BaseSettings):
     cors_allow_origins: list[str] = ["http://localhost:3000"]
     cors_allow_credentials: bool = False
 
+    # API key authentication. Empty list disables auth (dev only).
+    # Set WEBCHART_API_KEYS='["key1", "key2"]' in production.
+    api_keys: list[str] = []
+    api_key_header: str = "X-API-Key"
+
 
 settings = Settings()
