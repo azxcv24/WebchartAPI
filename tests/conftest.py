@@ -1,7 +1,5 @@
 """Shared test fixtures."""
 
-import shutil
-import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -12,13 +10,14 @@ from webchart.config import settings
 
 
 @pytest.fixture(autouse=True)
-def tmp_data_dir(tmp_path):
-    """Use a temp directory for data during tests."""
-    settings.data_dir = tmp_path / "data"
-    settings.data_dir.mkdir()
-    (settings.data_dir / "uploads").mkdir()
-    (settings.data_dir / "datasets").mkdir()
-    yield settings.data_dir
+def tmp_data_dir(tmp_path, monkeypatch):
+    """Point settings.data_dir at a per-test temp dir. monkeypatch reverts."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "uploads").mkdir()
+    (data_dir / "datasets").mkdir()
+    monkeypatch.setattr(settings, "data_dir", data_dir)
+    yield data_dir
 
 
 @pytest.fixture
