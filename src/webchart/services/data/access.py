@@ -102,23 +102,26 @@ def count_rows(dataset_id: str) -> int:
     return meta.row_count
 
 
-def list_datasets() -> list[DatasetMeta]:
-    """List all available datasets."""
+def list_datasets(limit: int = 100, offset: int = 0) -> list[DatasetMeta]:
+    """List available datasets with pagination (sorted by created_at desc)."""
     datasets_dir = settings.data_dir / "datasets"
     if not datasets_dir.exists():
         return []
 
-    result = []
-    for d in datasets_dir.iterdir():
-        if d.is_dir():
-            meta_path = d / "meta.json"
-            if meta_path.exists():
-                try:
-                    meta = DatasetMeta.model_validate_json(meta_path.read_text())
-                    result.append(meta)
-                except Exception:
-                    logger.warning(f"Failed to read metadata for {d.name}")
-    return result
+    metas: list[DatasetMeta] = []
+    for d in sorted(datasets_dir.iterdir()):
+        if not d.is_dir():
+            continue
+        meta_path = d / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            metas.append(DatasetMeta.model_validate_json(meta_path.read_text()))
+        except Exception:
+            logger.warning(f"Failed to read metadata for {d.name}")
+
+    metas.sort(key=lambda m: m.created_at, reverse=True)
+    return metas[offset : offset + limit]
 
 
 def delete_dataset(dataset_id: str) -> None:

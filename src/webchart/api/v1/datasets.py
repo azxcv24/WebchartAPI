@@ -107,13 +107,13 @@ async def connect_remote(
 
 
 @router.get("", response_model=list[DatasetDetailResponse])
-async def list_datasets():
-    """List all datasets."""
-    datasets = access.list_datasets()
-    return [
-        DatasetDetailResponse(**d.model_dump())
-        for d in datasets
-    ]
+async def list_datasets(
+    limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
+):
+    """List datasets (newest first), paginated."""
+    datasets = access.list_datasets(limit=limit, offset=offset)
+    return [DatasetDetailResponse(**d.model_dump()) for d in datasets]
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetailResponse)
