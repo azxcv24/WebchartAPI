@@ -1,10 +1,13 @@
 """Dataset API endpoints: upload, connect, list, schema, preview, delete."""
 
+import logging
 import uuid
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Query
 
+from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import WebchartError, webchart_error_to_http
 from webchart.models.dataset import (
@@ -16,7 +19,14 @@ from webchart.models.dataset import (
     RemoteSourceSpec,
 )
 from webchart.services.data import access
-from webchart.services.ingest.upload import convert_to_parquet, save_upload
+from webchart.services.ingest.upload import (
+    convert_to_parquet,
+    save_upload,
+    write_error_meta,
+    write_initial_meta,
+)
+
+logger = logging.getLogger("webchart.api.datasets")
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -33,13 +43,14 @@ async def upload_dataset(
         raise webchart_error_to_http(e)
 
     dataset_id = str(uuid.uuid4())
-
-    # Process in background
-    background_tasks.add_task(
-        _process_upload,
-        temp_path,
-        dataset_id,
+    write_initial_meta(
+        dataset_id=dataset_id,
+        name=Path(file.filename or dataset_id).stem,
+        source_format=temp_path.suffix.lstrip("."),
+        size_bytes=temp_path.stat().st_size,
     )
+
+    background_tasks.add_task(_process_upload, temp_path, dataset_id)
 
     return DatasetCreateResponse(
         dataset_id=dataset_id,
@@ -47,15 +58,14 @@ async def upload_dataset(
     )
 
 
-async def _process_upload(temp_path, dataset_id: str) -> None:
+async def _process_upload(temp_path: Path, dataset_id: str) -> None:
     """Background task: convert uploaded file to Parquet."""
-    import logging
-    logger = logging.getLogger("webchart.api.datasets")
     try:
         await run_in_thread(convert_to_parquet, temp_path, dataset_id)
         logger.info(f"Dataset {dataset_id} processed successfully")
     except Exception as e:
         logger.error(f"Failed to process dataset {dataset_id}: {e}")
+        write_error_meta(dataset_id, str(e))
 
 
 @router.post("/connect", response_model=DatasetCreateResponse, status_code=202)
@@ -72,16 +82,21 @@ async def connect_remote(
         raise webchart_error_to_http(e)
 
     dataset_id = str(uuid.uuid4())
+    write_initial_meta(
+        dataset_id=dataset_id,
+        name=Path(spec.uri).name or dataset_id,
+        source_format=spec.protocol,
+    )
 
-    async def _ingest():
-        import logging
-        logger = logging.getLogger("webchart.api.datasets")
+    async def _ingest() -> None:
         try:
-            from webchart.config import settings
-            await backend.ingest_to_parquet(spec, settings.data_dir / "datasets" / dataset_id)
+            await backend.ingest_to_parquet(
+                spec, settings.data_dir / "datasets" / dataset_id
+            )
             logger.info(f"Remote dataset {dataset_id} ingested successfully")
         except Exception as e:
             logger.error(f"Failed to ingest remote dataset {dataset_id}: {e}")
+            write_error_meta(dataset_id, str(e))
 
     background_tasks.add_task(_ingest)
 

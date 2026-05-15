@@ -20,6 +20,46 @@ logger = logging.getLogger("webchart.ingest.upload")
 CHUNK_SIZE = 64 * 1024 * 1024  # 64MB read chunks
 
 
+def _meta_path(dataset_id: str) -> Path:
+    return settings.data_dir / "datasets" / dataset_id / "meta.json"
+
+
+def write_initial_meta(
+    dataset_id: str,
+    name: str,
+    source_format: str,
+    size_bytes: int = 0,
+) -> DatasetMeta:
+    """Persist an INGESTING placeholder so callers can poll status."""
+    meta = DatasetMeta(
+        dataset_id=dataset_id,
+        name=name,
+        status=DatasetStatus.INGESTING,
+        size_bytes=size_bytes,
+        source_format=source_format,
+    )
+    path = _meta_path(dataset_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(meta.model_dump_json(indent=2))
+    return meta
+
+
+def write_error_meta(dataset_id: str, error_message: str) -> None:
+    """Update the sidecar to ERROR. Falls back to creating one if missing."""
+    path = _meta_path(dataset_id)
+    if path.exists():
+        try:
+            meta = DatasetMeta.model_validate_json(path.read_text())
+        except Exception:
+            meta = DatasetMeta(dataset_id=dataset_id, name=dataset_id)
+    else:
+        meta = DatasetMeta(dataset_id=dataset_id, name=dataset_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+    meta.status = DatasetStatus.ERROR
+    meta.error_message = error_message[:500]
+    path.write_text(meta.model_dump_json(indent=2))
+
+
 async def save_upload(upload_file: UploadFile) -> Path:
     """Save uploaded file to a temporary location."""
     suffix = Path(upload_file.filename or "data").suffix.lower()
