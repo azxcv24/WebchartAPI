@@ -108,6 +108,27 @@ async def refresh_session_ttl(session_id: str, ttl: int | None = None) -> None:
 # --- Utility ---
 
 def chart_spec_hash(spec: dict[str, Any]) -> str:
-    """Generate a deterministic hash for a chart specification."""
+    """Generate a deterministic hash for a chart specification (full)."""
     canonical = json.dumps(spec, sort_keys=True, default=str)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
+
+
+# Fields that actually affect tile pixels. Title, width/height, format,
+# legend etc. do NOT change tile contents (tiles are headless), so excluding
+# them lets the same tile cache serve many chart sizes.
+_TILE_HASH_FIELDS = (
+    "chart_type",
+    "x_axis",
+    "y_axis",
+    "y_columns",
+    "series",
+    "downsample_algorithm",
+    "background_color",
+)
+
+
+def tile_spec_hash(spec: dict[str, Any]) -> str:
+    """Deterministic hash for the tile-affecting subset of a chart spec."""
+    subset = {k: spec.get(k) for k in _TILE_HASH_FIELDS}
+    canonical = json.dumps(subset, sort_keys=True, default=str)
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]

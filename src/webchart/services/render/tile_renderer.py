@@ -10,6 +10,7 @@ from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
 from webchart.core.math_utils import visible_tile_indices
 from webchart.models.chart import ChartSpec, ChartType
+from webchart.models.dataset import DatasetMeta
 from webchart.services.data.access import get_dataset_meta, read_window
 from webchart.services.data.downsample import downsample
 from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
@@ -19,6 +20,16 @@ logger = logging.getLogger("webchart.render.tile")
 _renderer = MatplotlibRenderer()
 
 
+def _resolve_x_range(meta: DatasetMeta, x_col: str) -> tuple[float, float] | None:
+    info = next((c for c in meta.columns if c.name == x_col), None)
+    if info and info.min_value is not None and info.max_value is not None:
+        try:
+            return float(info.min_value), float(info.max_value)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 async def render_tile(
     dataset_id: str,
     chart_spec: ChartSpec,
@@ -26,9 +37,13 @@ async def render_tile(
     tile_x: int,
     tile_y: int = 0,
     chart_hash: str = "",
+    meta: DatasetMeta | None = None,
 ) -> bytes:
-    """Render a single tile, using cache if available."""
-    # Check cache
+    """Render a single tile, using cache if available.
+
+    `meta` may be passed in by callers that render multiple tiles for the
+    same dataset so we avoid re-reading meta.json per tile.
+    """
     key = redis_cache.tile_key(dataset_id, chart_hash, zoom, tile_x, tile_y)
     try:
         cached = await redis_cache.get_tile(key)
@@ -37,26 +52,21 @@ async def render_tile(
     except Exception:
         logger.debug("Redis unavailable, rendering without cache")
 
-    # Compute tile data range
-    meta = get_dataset_meta(dataset_id)
+    if meta is None:
+        meta = get_dataset_meta(dataset_id)
     x_col = chart_spec.x_axis.column
 
-    # Find x range from metadata
-    x_col_info = next((c for c in meta.columns if c.name == x_col), None)
-    if x_col_info and x_col_info.min_value is not None and x_col_info.max_value is not None:
-        data_x_min = float(x_col_info.min_value)
-        data_x_max = float(x_col_info.max_value)
+    x_bounds = _resolve_x_range(meta, x_col)
+    if x_bounds is None:
+        data_x_min, data_x_max = 0.0, 1.0
     else:
-        # Fallback: need to compute from data
-        data_x_min = 0.0
-        data_x_max = 1.0
+        data_x_min, data_x_max = x_bounds
 
     num_tiles = 2**zoom
     tile_width = (data_x_max - data_x_min) / num_tiles
     tile_x_min = data_x_min + tile_x * tile_width
     tile_x_max = tile_x_min + tile_width
 
-    # Read and downsample data for this tile
     y_columns = _get_y_columns(chart_spec)
     columns = [x_col] + y_columns
 
@@ -70,7 +80,6 @@ async def render_tile(
             downsample, data, x_col, primary_y, settings.tile_size, "lttb"
         )
 
-    # Render tile in thread pool
     tile_bytes = await run_in_thread(
         _renderer.render_tile,
         data,
@@ -81,7 +90,6 @@ async def render_tile(
         (tile_x_min, tile_x_max),
     )
 
-    # Cache result
     try:
         await redis_cache.set_tile(key, tile_bytes)
     except Exception:
@@ -105,21 +113,15 @@ async def render_visible_tiles(
     meta = get_dataset_meta(dataset_id)
     x_col = chart_spec.x_axis.column
 
-    x_col_info = next((c for c in meta.columns if c.name == x_col), None)
-    if x_col_info and x_col_info.min_value is not None and x_col_info.max_value is not None:
-        data_x_min = float(x_col_info.min_value)
-        data_x_max = float(x_col_info.max_value)
-    else:
-        data_x_min, data_x_max = viewport_x_range
+    x_bounds = _resolve_x_range(meta, x_col)
+    data_x_min, data_x_max = x_bounds if x_bounds else viewport_x_range
 
-    # Get visible tiles
     indices = visible_tile_indices(
         viewport_x_range[0], viewport_x_range[1],
         data_x_min, data_x_max,
         zoom,
     )
 
-    # Add prefetch tiles
     num_tiles = 2**zoom
     all_indices = set(indices)
     for idx in indices:
@@ -129,11 +131,11 @@ async def render_visible_tiles(
             if idx + offset < num_tiles:
                 all_indices.add(idx + offset)
 
-    # Render all tiles concurrently (each render_tile awaits run_in_thread
-    # so the actual matplotlib work fans out across the render pool).
+    # render_tile awaits run_in_thread internally so the actual matplotlib
+    # work fans out across the render pool — gather here gives concurrency.
     ordered = sorted(all_indices)
     tasks = [
-        render_tile(dataset_id, chart_spec, zoom, idx, 0, chart_hash)
+        render_tile(dataset_id, chart_spec, zoom, idx, 0, chart_hash, meta=meta)
         for idx in ordered
     ]
     rendered = await asyncio.gather(*tasks, return_exceptions=True)

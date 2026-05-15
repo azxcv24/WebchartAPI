@@ -6,7 +6,7 @@ import struct
 
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from webchart.cache.redis_cache import chart_spec_hash
+from webchart.cache.redis_cache import tile_spec_hash
 from webchart.models.session import ViewportWindow
 from webchart.models.ws_messages import (
     ErrorMessage,
@@ -89,7 +89,7 @@ async def _handle_viewport_change(
 
     state = await update_viewport(session_id, viewport)
     spec = state.chart_config
-    c_hash = chart_spec_hash(spec.model_dump())
+    c_hash = tile_spec_hash(spec.model_dump())
 
     # Render tiles
     tiles = await render_visible_tiles(
