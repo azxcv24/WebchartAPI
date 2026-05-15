@@ -1,5 +1,6 @@
 """Tile-based renderer for dynamic interactive charts."""
 
+import asyncio
 import logging
 
 import pandas as pd
@@ -128,15 +129,22 @@ async def render_visible_tiles(
             if idx + offset < num_tiles:
                 all_indices.add(idx + offset)
 
-    # Render all tiles
-    result: dict[str, bytes] = {}
-    for tile_idx in sorted(all_indices):
-        tile_id = f"{zoom}-{tile_idx}-0"
-        tile_bytes = await render_tile(
-            dataset_id, chart_spec, zoom, tile_idx, 0, chart_hash,
-        )
-        result[tile_id] = tile_bytes
+    # Render all tiles concurrently (each render_tile awaits run_in_thread
+    # so the actual matplotlib work fans out across the render pool).
+    ordered = sorted(all_indices)
+    tasks = [
+        render_tile(dataset_id, chart_spec, zoom, idx, 0, chart_hash)
+        for idx in ordered
+    ]
+    rendered = await asyncio.gather(*tasks, return_exceptions=True)
 
+    result: dict[str, bytes] = {}
+    for idx, outcome in zip(ordered, rendered):
+        tile_id = f"{zoom}-{idx}-0"
+        if isinstance(outcome, Exception):
+            logger.warning(f"Tile {tile_id} render failed: {outcome}")
+            continue
+        result[tile_id] = outcome
     return result
 
 
