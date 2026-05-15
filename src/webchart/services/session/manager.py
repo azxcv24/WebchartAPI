@@ -2,7 +2,7 @@
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from webchart.cache import redis_cache
 from webchart.core.errors import SessionNotFoundError
@@ -47,7 +47,7 @@ async def update_viewport(session_id: str, viewport: ViewportWindow) -> SessionS
     """Update session viewport and refresh TTL."""
     state = await get_session(session_id)
     state.viewport = viewport
-    state.last_active = datetime.now()
+    state.last_active = datetime.now(timezone.utc)
 
     await redis_cache.set_session(session_id, state.model_dump())
     return state

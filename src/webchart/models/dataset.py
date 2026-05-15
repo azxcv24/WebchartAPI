@@ -1,7 +1,11 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, Field
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class DatasetStatus(str, Enum):
@@ -30,7 +34,7 @@ class DatasetMeta(BaseModel):
     columns: list[ColumnInfo] = Field(default_factory=list)
     partition_count: int = 0
     source_format: str = ""
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=_utcnow)
     error_message: str | None = None
 
 

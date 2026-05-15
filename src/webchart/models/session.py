@@ -1,8 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, Field
 
 from webchart.models.chart import ChartSpec
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class ViewportWindow(BaseModel):
@@ -24,8 +28,8 @@ class SessionState(BaseModel):
     dataset_id: str
     chart_config: ChartSpec
     viewport: ViewportWindow
-    created_at: datetime = Field(default_factory=datetime.now)
-    last_active: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=_utcnow)
+    last_active: datetime = Field(default_factory=_utcnow)
 
 
 class SessionResponse(BaseModel):
