@@ -49,3 +49,6 @@ htmlcov/
 
 # Ruff
 .ruff_cache/
+
+# AI tooling scratch
+.ai/
