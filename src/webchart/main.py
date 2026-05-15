@@ -7,9 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from webchart.api.middleware import RequestIdMiddleware, TimingMiddleware
 from webchart.api.router import api_router
-from webchart.cache.redis_cache import close_redis
+from webchart.cache.redis_cache import close_redis, init_redis
 from webchart.config import settings
-from webchart.core.concurrency import shutdown_render_pool
+from webchart.core.concurrency import init_render_pool, shutdown_render_pool
 from webchart.core.logging import setup_logging
 from webchart.services.ingest.local import LocalIngestBackend
 from webchart.services.ingest.registry import register_backend
@@ -27,6 +27,10 @@ async def lifespan(app: FastAPI):
 
     # Register ingest backends
     register_backend(LocalIngestBackend())
+
+    # Eager singleton init avoids first-request races
+    init_render_pool()
+    await init_redis()
 
     yield
 

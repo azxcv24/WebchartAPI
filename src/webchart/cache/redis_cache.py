@@ -1,5 +1,6 @@
 """Redis cache layer for tiles, queries, and sessions."""
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -12,25 +13,35 @@ from webchart.config import settings
 logger = logging.getLogger("webchart.cache")
 
 _pool: redis.Redis | None = None
+_init_lock = asyncio.Lock()
+
+
+async def init_redis() -> redis.Redis:
+    """Eagerly create the Redis pool (called from FastAPI lifespan)."""
+    global _pool
+    async with _init_lock:
+        if _pool is None:
+            _pool = redis.from_url(
+                settings.redis_url,
+                decode_responses=False,  # binary for tile images
+            )
+    return _pool
 
 
 async def get_redis() -> redis.Redis:
-    """Get or create Redis connection pool."""
-    global _pool
-    if _pool is None:
-        _pool = redis.from_url(
-            settings.redis_url,
-            decode_responses=False,  # binary for tile images
-        )
-    return _pool
+    """Get the Redis pool, initializing under a lock if needed."""
+    if _pool is not None:
+        return _pool
+    return await init_redis()
 
 
 async def close_redis() -> None:
     """Close Redis connection pool."""
     global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+    async with _init_lock:
+        if _pool is not None:
+            await _pool.close()
+            _pool = None
 
 
 # --- Tile Cache ---
