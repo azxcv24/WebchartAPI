@@ -59,11 +59,15 @@ async def render_tile(
     y_columns = _get_y_columns(chart_spec)
     columns = [x_col] + y_columns
 
-    data = read_window(dataset_id, x_col, (tile_x_min, tile_x_max), columns)
+    data = await run_in_thread(
+        read_window, dataset_id, x_col, (tile_x_min, tile_x_max), columns
+    )
 
     if not data.empty and len(data) > settings.tile_size:
         primary_y = y_columns[0] if y_columns else x_col
-        data = downsample(data, x_col, primary_y, settings.tile_size, "lttb")
+        data = await run_in_thread(
+            downsample, data, x_col, primary_y, settings.tile_size, "lttb"
+        )
 
     # Render tile in thread pool
     tile_bytes = await run_in_thread(

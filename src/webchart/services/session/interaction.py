@@ -5,6 +5,7 @@ import logging
 import numpy as np
 import pandas as pd
 
+from webchart.core.concurrency import run_in_thread
 from webchart.core.math_utils import Viewport
 from webchart.models.session import SessionState, ViewportWindow
 from webchart.models.ws_messages import HoverDataMessage
@@ -59,7 +60,9 @@ async def resolve_hover(
     window = (data_x - margin, data_x + margin)
 
     try:
-        data = read_window(state.dataset_id, x_col, window, [x_col, primary_y])
+        data = await run_in_thread(
+            read_window, state.dataset_id, x_col, window, [x_col, primary_y]
+        )
     except Exception:
         return None
 
