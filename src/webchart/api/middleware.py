@@ -55,9 +55,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     swap in a Redis-backed implementation.
     """
 
-    def __init__(self, app, requests_per_minute: int) -> None:
+    def __init__(self, app) -> None:
         super().__init__(app)
-        self._limit = requests_per_minute
         self._window_s = 60.0
         self._lock = threading.Lock()
         self._hits: dict[str, deque[float]] = {}
@@ -73,6 +72,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not settings.rate_limit_enabled or request.url.path == "/health":
             return await call_next(request)
 
+        limit = settings.rate_limit_per_minute
         key = self._client_key(request)
         now = time.monotonic()
         cutoff = now - self._window_s
@@ -81,13 +81,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             bucket = self._hits.setdefault(key, deque())
             while bucket and bucket[0] < cutoff:
                 bucket.popleft()
-            if len(bucket) >= self._limit:
+            if len(bucket) >= limit:
                 retry_after = max(1, int(self._window_s - (now - bucket[0])))
                 return JSONResponse(
                     status_code=429,
                     content={
                         "code": "RATE_LIMITED",
-                        "message": f"Limit {self._limit}/min exceeded",
+                        "message": f"Limit {limit}/min exceeded",
                     },
                     headers={"Retry-After": str(retry_after)},
                 )

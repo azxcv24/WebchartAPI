@@ -56,10 +56,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
     app.add_middleware(TimingMiddleware)
-    app.add_middleware(
-        RateLimitMiddleware,
-        requests_per_minute=settings.rate_limit_per_minute,
-    )
+    app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
     # Routes

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import fakeredis.aioredis
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
@@ -18,6 +19,40 @@ def tmp_data_dir(tmp_path, monkeypatch):
     (data_dir / "datasets").mkdir()
     monkeypatch.setattr(settings, "data_dir", data_dir)
     yield data_dir
+
+
+@pytest.fixture(autouse=True)
+def fake_redis(monkeypatch):
+    """Use fakeredis in place of a real Redis server."""
+    from webchart.cache import redis_cache
+
+    fake = fakeredis.aioredis.FakeRedis(decode_responses=False)
+    monkeypatch.setattr(redis_cache, "_pool", fake)
+
+    async def _noop_init():
+        return fake
+
+    monkeypatch.setattr(redis_cache, "init_redis", _noop_init)
+    yield fake
+
+
+@pytest.fixture(autouse=True)
+def disable_rate_limit(monkeypatch):
+    """Rate limit interferes with tight test loops; disable by default."""
+    monkeypatch.setattr(settings, "rate_limit_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+def disable_auth(monkeypatch):
+    """Most tests assume auth off; opt-in via the require_auth fixture."""
+    monkeypatch.setattr(settings, "api_keys", [])
+
+
+@pytest.fixture
+def require_auth(monkeypatch):
+    """Opt-in: enable API key auth for a single test."""
+    monkeypatch.setattr(settings, "api_keys", ["test-key", "other-key"])
+    return "test-key"
 
 
 @pytest.fixture
