@@ -27,6 +27,11 @@ class Settings(BaseSettings):
     connector_timeout: int = 300  # seconds, per remote download/query
     clickhouse_max_rows: int = 10_000_000  # cap on rows pulled from a query
 
+    # Multi-resolution pyramid (pre-aggregated overview levels)
+    pyramid_points_per_tile: int = 512  # points each tile targets
+    pyramid_max_points: int = 2_000_000  # cap on rows in the finest level
+    pyramid_max_level: int = 20  # hard cap on pyramid depth
+
     # Rendering
     render_pool_size: int = 8
     tile_size: int = 512

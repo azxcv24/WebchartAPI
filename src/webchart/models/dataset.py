@@ -25,6 +25,20 @@ class ColumnInfo(BaseModel):
     unique_count: int | None = None
 
 
+class PyramidInfo(BaseModel):
+    """Metadata for a multi-resolution pyramid built on one x column."""
+
+    x_column: str
+    columns: list[str]
+    max_level: int  # levels 0..max_level are available
+    points_per_tile: int  # target points each tile wants (drives level pick)
+    method: str = "minmax"
+    total_points: int = 0  # rows in the finest level
+    x_min: float | None = None
+    x_max: float | None = None
+    built_at: datetime = Field(default_factory=_utcnow)
+
+
 class DatasetMeta(BaseModel):
     dataset_id: str
     name: str
@@ -36,6 +50,8 @@ class DatasetMeta(BaseModel):
     source_format: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
     error_message: str | None = None
+    # Pyramids keyed by x_column name.
+    pyramids: dict[str, PyramidInfo] = Field(default_factory=dict)
 
 
 class RemoteSourceSpec(BaseModel):
