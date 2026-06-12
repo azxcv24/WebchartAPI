@@ -1,0 +1,100 @@
+"""HTTP/HTTPS ingest backend.
+
+Streams a remote file to disk with a size cap, then converts to Parquet.
+
+URI:    https://host/path/file.csv
+creds:  bearer | token (Authorization: Bearer ...), or username/password (Basic)
+options: header_<Name> entries become request headers
+"""
+
+import logging
+from pathlib import Path
+
+from webchart.config import settings
+from webchart.core.concurrency import run_in_thread
+from webchart.core.errors import ConnectorError, FileTooLargeError
+from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
+from webchart.services.ingest.common import (
+    size_limit_for,
+    temp_download_path,
+    validate_remote_format,
+)
+from webchart.services.ingest.upload import convert_to_parquet
+
+logger = logging.getLogger("webchart.ingest.http")
+
+_STREAM_CHUNK = 1024 * 1024  # 1MB
+
+
+class HttpIngestBackend:
+    """Download a file over HTTP(S) and convert it to Parquet."""
+
+    @property
+    def supported_protocols(self) -> list[str]:
+        return ["http", "https"]
+
+    @staticmethod
+    def _headers(spec: RemoteSourceSpec) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        creds = spec.credentials
+        token = creds.get("bearer") or creds.get("token")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        for k, v in spec.options.items():
+            if k.lower().startswith("header_"):
+                headers[k[len("header_"):]] = v
+        return headers
+
+    @staticmethod
+    def _auth(spec: RemoteSourceSpec):
+        creds = spec.credentials
+        if creds.get("username"):
+            return (creds["username"], creds.get("password", ""))
+        return None
+
+    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=settings.connector_timeout
+            ) as client:
+                r = await client.head(
+                    spec.uri, headers=self._headers(spec), auth=self._auth(spec)
+                )
+                return r.status_code < 400
+        except Exception as e:
+            logger.debug(f"HTTP validate_source failed: {e}")
+            return False
+
+    async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
+        import httpx
+
+        dataset_id = dest.name
+        suffix = validate_remote_format(spec.uri)
+        temp_path = temp_download_path(dataset_id, suffix)
+        limit = size_limit_for(suffix)
+
+        size = 0
+        try:
+            async with httpx.AsyncClient(
+                follow_redirects=True, timeout=settings.connector_timeout
+            ) as client:
+                async with client.stream(
+                    "GET", spec.uri, headers=self._headers(spec), auth=self._auth(spec)
+                ) as resp:
+                    resp.raise_for_status()
+                    with open(temp_path, "wb") as f:
+                        async for chunk in resp.aiter_bytes(_STREAM_CHUNK):
+                            size += len(chunk)
+                            if size > limit:
+                                raise FileTooLargeError(size, limit)
+                            f.write(chunk)
+        except FileTooLargeError:
+            temp_path.unlink(missing_ok=True)
+            raise
+        except httpx.HTTPError as e:
+            temp_path.unlink(missing_ok=True)
+            raise ConnectorError(f"HTTP download failed for {spec.uri}: {e}") from e
+
+        return await run_in_thread(convert_to_parquet, temp_path, dataset_id)
