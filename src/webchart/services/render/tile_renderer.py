@@ -13,6 +13,7 @@ from webchart.models.chart import ChartSpec, ChartType
 from webchart.models.dataset import DatasetMeta
 from webchart.services.data.access import get_dataset_meta, read_window
 from webchart.services.data.downsample import downsample
+from webchart.services.data.pyramid import level_for_zoom, read_pyramid_window
 from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
 
 logger = logging.getLogger("webchart.render.tile")
@@ -28,6 +29,31 @@ def _resolve_x_range(meta: DatasetMeta, x_col: str) -> tuple[float, float] | Non
         except (TypeError, ValueError):
             return None
     return None
+
+
+def _read_tile_data(
+    dataset_id: str,
+    meta: DatasetMeta,
+    x_col: str,
+    x_range: tuple[float, float],
+    columns: list[str],
+    zoom: int,
+):
+    """Read tile data from the pyramid when available, else from base.
+
+    Runs in the render thread pool (sync). Picks a pyramid level for the
+    zoom; falls back to base data when there's no pyramid for this x column
+    or the zoom is finer than the pyramid was built for (where the base
+    read is already cheap because the x range is narrow).
+    """
+    info = meta.pyramids.get(x_col)
+    if info is not None:
+        level = level_for_zoom(info, zoom)
+        if level is not None:
+            df = read_pyramid_window(dataset_id, x_col, level, x_range, columns)
+            if df is not None:
+                return df
+    return read_window(dataset_id, x_col, x_range, columns)
 
 
 async def render_tile(
@@ -71,7 +97,8 @@ async def render_tile(
     columns = [x_col] + y_columns
 
     data = await run_in_thread(
-        read_window, dataset_id, x_col, (tile_x_min, tile_x_max), columns
+        _read_tile_data,
+        dataset_id, meta, x_col, (tile_x_min, tile_x_max), columns, zoom,
     )
 
     if not data.empty and len(data) > settings.tile_size:
