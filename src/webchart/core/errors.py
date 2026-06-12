@@ -56,6 +56,13 @@ class QueryTooLargeError(WebchartError):
         )
 
 
+class ConnectorError(WebchartError):
+    """Raised when a remote ingest connector fails (auth, network, missing dep)."""
+
+    def __init__(self, message: str):
+        super().__init__(message, "CONNECTOR_ERROR")
+
+
 def webchart_error_to_http(err: WebchartError) -> HTTPException:
     """Convert a WebchartError to an appropriate HTTPException."""
     status_map = {
@@ -66,6 +73,7 @@ def webchart_error_to_http(err: WebchartError) -> HTTPException:
         "FILE_TOO_LARGE": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         "QUERY_TOO_LARGE": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         "DATASET_PROCESSING_ERROR": status.HTTP_422_UNPROCESSABLE_ENTITY,
+        "CONNECTOR_ERROR": status.HTTP_502_BAD_GATEWAY,
         "RENDER_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     }
     return HTTPException(

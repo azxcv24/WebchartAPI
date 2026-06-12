@@ -90,6 +90,52 @@ async def save_upload(upload_file: UploadFile) -> Path:
     return temp_path
 
 
+def write_table_to_parquet(
+    table: "pa.Table | pd.DataFrame",
+    dataset_id: str,
+    name: str,
+    source_format: str,
+) -> DatasetMeta:
+    """Write an in-memory Arrow Table / pandas DataFrame to partitioned Parquet.
+
+    Used by connectors that produce tabular results directly (e.g. ClickHouse)
+    rather than a downloaded file.
+    """
+    dest_dir = settings.data_dir / "datasets" / dataset_id
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        if isinstance(table, pa.Table):
+            nbytes = table.nbytes
+            df = table.to_pandas()
+        else:
+            df = table
+            nbytes = int(df.memory_usage(deep=True).sum())
+
+        target_partitions = max(1, nbytes // (128 * 1024 * 1024))
+        ddf = dd.from_pandas(df, npartitions=int(target_partitions))
+        ddf.to_parquet(dest_dir / "data", engine="pyarrow", write_index=False)
+
+        row_count = len(df)
+        columns = detect_schema(dest_dir / "data")
+
+        meta = DatasetMeta(
+            dataset_id=dataset_id,
+            name=name,
+            status=DatasetStatus.READY,
+            row_count=row_count,
+            size_bytes=nbytes,
+            columns=columns,
+            partition_count=int(target_partitions),
+            source_format=source_format,
+        )
+        (dest_dir / "meta.json").write_text(meta.model_dump_json(indent=2))
+        return meta
+
+    except Exception as e:
+        raise DatasetProcessingError(f"Failed to write {name} to parquet: {e}") from e
+
+
 def convert_to_parquet(source_path: Path, dataset_id: str) -> DatasetMeta:
     """Convert a data file to partitioned Parquet and return metadata."""
     dest_dir = settings.data_dir / "datasets" / dataset_id

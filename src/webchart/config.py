@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     # Query guards
     max_query_rows: int = 5_000_000  # cap on read_window result size
 
+    # Remote ingest connectors
+    connector_timeout: int = 300  # seconds, per remote download/query
+    clickhouse_max_rows: int = 10_000_000  # cap on rows pulled from a query
+
     # Rendering
     render_pool_size: int = 8
     tile_size: int = 512
