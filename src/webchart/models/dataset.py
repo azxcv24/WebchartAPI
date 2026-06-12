@@ -39,15 +39,31 @@ class DatasetMeta(BaseModel):
 
 
 class RemoteSourceSpec(BaseModel):
-    protocol: str = Field(description="s3, ftp, sftp, http, https, smb, file")
-    uri: str = Field(description="Full URI to the data source")
+    protocol: str = Field(
+        description="file, s3, minio, http, https, ftp, sftp, smb, clickhouse, clickhouses"
+    )
+    uri: str = Field(
+        description=(
+            "Full URI. Examples: s3://bucket/key.parquet, "
+            "https://host/file.csv, ftp://host/path/file.csv, "
+            "smb://host/share/file.csv, clickhouse://host:8123/db"
+        )
+    )
     credentials: dict[str, str] = Field(
         default_factory=dict,
-        description="Protocol-specific credentials",
+        description=(
+            "Protocol-specific credentials. s3/minio: access_key, secret_key; "
+            "http: bearer or username/password; ftp/sftp/smb: username, password "
+            "(sftp also private_key; smb also domain); clickhouse: username, password"
+        ),
     )
     options: dict[str, str] = Field(
         default_factory=dict,
-        description="Additional connection options",
+        description=(
+            "Connection options. s3/minio: endpoint_url, region, addressing_style; "
+            "http: header_<Name>; sftp: known_hosts; smb: port; "
+            "clickhouse: query or table, limit, secure"
+        ),
     )
 
 

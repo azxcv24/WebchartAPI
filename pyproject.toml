@@ -31,6 +31,7 @@ connectors = [
     "aioftp>=0.22",
     "asyncssh>=2.14",
     "smbprotocol>=1.13",
+    "clickhouse-connect>=0.7",
 ]
 dev = [
     "pytest>=8.0",

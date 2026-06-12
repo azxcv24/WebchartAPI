@@ -11,8 +11,14 @@ from webchart.cache.redis_cache import close_redis, init_redis
 from webchart.config import settings
 from webchart.core.concurrency import init_render_pool, shutdown_render_pool
 from webchart.core.logging import setup_logging
+from webchart.services.ingest.clickhouse import ClickHouseIngestBackend
+from webchart.services.ingest.ftp import FtpIngestBackend
+from webchart.services.ingest.http import HttpIngestBackend
 from webchart.services.ingest.local import LocalIngestBackend
 from webchart.services.ingest.registry import register_backend
+from webchart.services.ingest.s3 import S3IngestBackend
+from webchart.services.ingest.sftp import SftpIngestBackend
+from webchart.services.ingest.smb import SmbIngestBackend
 
 
 @asynccontextmanager
@@ -25,8 +31,19 @@ async def lifespan(app: FastAPI):
     (settings.data_dir / "uploads").mkdir(exist_ok=True)
     (settings.data_dir / "datasets").mkdir(exist_ok=True)
 
-    # Register ingest backends
-    register_backend(LocalIngestBackend())
+    # Register ingest backends. File connectors lazy-import their drivers,
+    # so registering is cheap even without the [connectors] extra installed;
+    # an unavailable driver surfaces a clear error only when actually used.
+    for backend in (
+        LocalIngestBackend(),
+        S3IngestBackend(),
+        HttpIngestBackend(),
+        FtpIngestBackend(),
+        SftpIngestBackend(),
+        SmbIngestBackend(),
+        ClickHouseIngestBackend(),
+    ):
+        register_backend(backend)
 
     # Eager singleton init avoids first-request races
     init_render_pool()
