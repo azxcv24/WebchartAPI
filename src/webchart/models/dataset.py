@@ -106,3 +106,18 @@ class DatasetPreviewResponse(BaseModel):
     data: list[list[object]]
     total_rows: int
     preview_rows: int
+
+
+class PyramidBuildRequest(BaseModel):
+    x_column: str = Field(description="Numeric column the pyramid is indexed by")
+    columns: list[str] | None = Field(
+        default=None,
+        description="y columns to carry (defaults to all numeric columns)",
+    )
+    method: str = "minmax"
+
+
+class PyramidBuildResponse(BaseModel):
+    dataset_id: str
+    x_column: str
+    status: str  # "building"

@@ -16,6 +16,9 @@ from webchart.models.dataset import (
     DatasetMeta,
     DatasetPreviewResponse,
     DatasetStatus,
+    PyramidBuildRequest,
+    PyramidBuildResponse,
+    PyramidInfo,
     RemoteSourceSpec,
 )
 from webchart.services.data import access
@@ -156,6 +159,57 @@ async def preview_dataset(
         total_rows=meta.row_count,
         preview_rows=len(sample),
     )
+
+
+@router.post(
+    "/{dataset_id}/pyramid",
+    response_model=PyramidBuildResponse,
+    status_code=202,
+)
+async def build_pyramid_endpoint(
+    dataset_id: str,
+    req: PyramidBuildRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Build a multi-resolution overview pyramid for an x column.
+
+    Runs in the background; poll GET /{dataset_id}/pyramids for completion.
+    Pyramids let zoomed-out renders of huge datasets read a small
+    pre-aggregated file instead of scanning the full base data.
+    """
+    from webchart.services.data.pyramid import build_pyramid
+
+    try:
+        access.get_dataset_meta(dataset_id)  # 404 if missing
+    except WebchartError as e:
+        raise webchart_error_to_http(e)
+
+    async def _build() -> None:
+        try:
+            await run_in_thread(
+                build_pyramid, dataset_id, req.x_column, req.columns, req.method
+            )
+            logger.info(f"Pyramid built for {dataset_id}/{req.x_column}")
+        except Exception as e:
+            logger.error(f"Pyramid build failed for {dataset_id}/{req.x_column}: {e}")
+
+    background_tasks.add_task(_build)
+
+    return PyramidBuildResponse(
+        dataset_id=dataset_id,
+        x_column=req.x_column,
+        status="building",
+    )
+
+
+@router.get("/{dataset_id}/pyramids", response_model=dict[str, PyramidInfo])
+async def list_pyramids(dataset_id: str):
+    """List pyramids already built for a dataset, keyed by x column."""
+    try:
+        meta = access.get_dataset_meta(dataset_id)
+    except WebchartError as e:
+        raise webchart_error_to_http(e)
+    return meta.pyramids
 
 
 @router.delete("/{dataset_id}", status_code=204)
