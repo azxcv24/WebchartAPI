@@ -32,10 +32,11 @@ def big_dataset(tmp_data_dir):
 def test_build_creates_levels(big_dataset):
     info = build_pyramid(big_dataset, "x", columns=["y", "z"])
     assert info.max_level >= 1
+    n_series = 2  # y, z -> up to 2*n_series points per bucket
     for level in range(info.max_level + 1):
         df = read_pyramid_window(big_dataset, "x", level)
         assert df is not None
-        assert len(df) <= 2 * (2 ** level) + 2
+        assert len(df) <= 2 * n_series * (2 ** level) + 2
 
 
 def test_envelope_preserved_at_every_level(big_dataset):
@@ -44,6 +45,26 @@ def test_envelope_preserved_at_every_level(big_dataset):
         df = read_pyramid_window(big_dataset, "x", level, columns=["y", "z"])
         assert df["y"].max() == pytest.approx(9999.0)
         assert df["y"].min() == pytest.approx(-9999.0)
+
+
+def test_multi_series_envelope_preserved(tmp_data_dir):
+    """Each y series keeps its own per-bucket min/max, not just the primary."""
+    n = 50_000
+    x = np.arange(n)
+    a = np.sin(x / 1000.0)
+    b = np.cos(x / 1000.0)
+    a[10_000] = 5000.0   # spike only in series a
+    b[30_000] = -8000.0  # spike only in series b
+    df = pd.DataFrame({"x": x, "a": a, "b": b})
+    src = tmp_data_dir / "uploads" / "multi.csv"
+    df.to_csv(src, index=False)
+    convert_to_parquet(src, "multi")
+
+    info = build_pyramid("multi", "x", columns=["a", "b"])
+    for level in range(info.max_level + 1):
+        d = read_pyramid_window("multi", "x", level, columns=["a", "b"])
+        assert d["a"].max() == pytest.approx(5000.0), level
+        assert d["b"].min() == pytest.approx(-8000.0), level
 
 
 def test_meta_records_pyramid(big_dataset):

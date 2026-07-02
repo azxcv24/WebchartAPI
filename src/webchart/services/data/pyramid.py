@@ -149,16 +149,22 @@ def read_pyramid_window(
 def _minmax_select(
     pdf: pd.DataFrame,
     x_col: str,
-    y_col: str,
+    y_cols: list[str],
     carry: list[str],
     xmin: float,
     width: float,
     num_buckets: int,
 ) -> pd.DataFrame:
-    """Per x-bucket, keep the real rows at the min and max of y_col."""
+    """Per x-bucket, keep the real rows at the min and max of EACH y column.
+
+    Taking the union over every y column preserves an envelope for all
+    series (not just the primary), at the cost of up to 2*len(y_cols)
+    points per bucket.
+    """
     cols = [c for c in carry if c in pdf.columns]
-    sub = pdf[cols].dropna(subset=[x_col, y_col])
-    if sub.empty:
+    present_y = [c for c in y_cols if c in cols]
+    sub = pdf[cols].dropna(subset=[x_col])
+    if sub.empty or not present_y:
         return sub.reset_index(drop=True)
 
     x = sub[x_col].to_numpy(dtype="float64")
@@ -166,8 +172,11 @@ def _minmax_select(
     np.clip(bucket, 0, num_buckets - 1, out=bucket)
 
     work = sub.assign(__b=bucket).reset_index(drop=True)
-    grp = work.groupby("__b")[y_col]
-    idx = pd.Index(grp.idxmin()).union(pd.Index(grp.idxmax()))
+    idx = pd.Index([], dtype="int64")
+    for yc in present_y:
+        grp = work.dropna(subset=[yc]).groupby("__b")[yc]
+        if grp.ngroups:
+            idx = idx.union(pd.Index(grp.idxmin())).union(pd.Index(grp.idxmax()))
     out = work.loc[idx, cols].sort_values(x_col).reset_index(drop=True)
     return out
 
@@ -175,7 +184,7 @@ def _minmax_select(
 def _build_finest_level(
     ddf,
     x_col: str,
-    y_col: str,
+    y_cols: list[str],
     carry: list[str],
     xmin: float,
     width: float,
@@ -185,17 +194,22 @@ def _build_finest_level(
     meta = ddf._meta[[c for c in carry if c in ddf.columns]]
     candidates = ddf.map_partitions(
         _minmax_select,
-        x_col, y_col, carry, xmin, width, num_buckets,
+        x_col, y_cols, carry, xmin, width, num_buckets,
         meta=meta,
     ).compute()
     candidates = candidates.reset_index(drop=True)
     # Second pass picks the global min/max row per bucket from the candidates.
-    return _minmax_select(candidates, x_col, y_col, carry, xmin, width, num_buckets)
+    return _minmax_select(candidates, x_col, y_cols, carry, xmin, width, num_buckets)
 
 
-def _choose_max_level(row_count: int) -> int:
-    """Deepest level that stays under pyramid_max_points and the data size."""
-    bucket_cap = max(1, settings.pyramid_max_points // 2)
+def _choose_max_level(row_count: int, n_series: int = 1) -> int:
+    """Deepest level that stays under pyramid_max_points and the data size.
+
+    Each bucket holds up to 2*n_series points (min+max per series), so the
+    finest level has ~2*n_series*2^L points; factor that into the cap.
+    """
+    per_bucket = max(1, 2 * n_series)
+    bucket_cap = max(1, settings.pyramid_max_points // per_bucket)
     l_points = int(math.floor(math.log2(bucket_cap))) if bucket_cap >= 1 else 0
     l_data = int(math.floor(math.log2(max(1, row_count // 2)))) if row_count >= 2 else 0
     return max(0, min(settings.pyramid_max_level, l_points, l_data))
@@ -247,18 +261,17 @@ def build_pyramid(
     y_cols = [c for c in carry if c != x_column]
     if not y_cols:
         raise DatasetProcessingError("pyramid needs at least one numeric y column")
-    primary = y_cols[0]
 
     xmin, xmax = _x_bounds(meta, ddf, x_column)
     if not (xmax > xmin):
         raise DatasetProcessingError("degenerate x range (min >= max)")
 
     row_count = meta.row_count or int(ddf.shape[0].compute())
-    max_level = _choose_max_level(row_count)
+    max_level = _choose_max_level(row_count, len(y_cols))
     num_buckets = 2 ** max_level
     width = (xmax - xmin) / num_buckets
 
-    ddf2 = ddf[carry].dropna(subset=[x_column, primary])
+    ddf2 = ddf[carry].dropna(subset=[x_column])
 
     # Reset the pyramid dir for a clean rebuild.
     pdir = pyramid_dir(dataset_id, x_column)
@@ -266,14 +279,14 @@ def build_pyramid(
         shutil.rmtree(pdir)
     pdir.mkdir(parents=True, exist_ok=True)
 
-    finest = _build_finest_level(ddf2, x_column, primary, carry, xmin, width, num_buckets)
+    finest = _build_finest_level(ddf2, x_column, y_cols, carry, xmin, width, num_buckets)
     _write_level(dataset_id, x_column, max_level, finest)
 
     # Coarser levels are re-bucketed from the level above (small, in memory).
     cur = finest
     for level in range(max_level - 1, -1, -1):
         width_l = (xmax - xmin) / (2 ** level)
-        cur = _minmax_select(cur, x_column, primary, carry, xmin, width_l, 2 ** level)
+        cur = _minmax_select(cur, x_column, y_cols, carry, xmin, width_l, 2 ** level)
         _write_level(dataset_id, x_column, level, cur)
 
     info = PyramidInfo(
