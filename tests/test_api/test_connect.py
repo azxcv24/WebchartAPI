@@ -23,6 +23,9 @@ def test_connect_s3_lifecycle(client, monkeypatch, tmp_data_dir):
     sample = pd.DataFrame({"x": range(30), "y": [i * 2.0 for i in range(30)]})
 
     class FakeClient:
+        def head_object(self, Bucket, Key):  # noqa: N803 (boto3 kwarg names)
+            return {"ContentLength": 1024}
+
         def download_file(self, bucket, key, filename):
             sample.to_csv(filename, index=False)
 
