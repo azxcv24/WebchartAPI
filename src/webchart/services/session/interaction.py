@@ -69,13 +69,19 @@ async def resolve_hover(
     if data.empty:
         return None
 
-    # Find nearest point by x distance
+    # Find nearest point by x distance. data_x is in the x column's native
+    # units (read_window filtered the column against it directly).
     try:
         x_numeric = data[x_col].astype(float)
     except (TypeError, ValueError):
-        # Non-numeric x (timestamp, string): use the raw column for comparison
+        # Non-numeric x (e.g. timestamp): compare in epoch-ns space. NaT/NaN
+        # become NaN and are dropped so they cannot win idxmin.
         x_numeric = pd.to_datetime(data[x_col], errors="coerce").astype("int64", copy=False)
-    distances = (x_numeric - data_x).abs()
+        x_numeric = x_numeric.where(data[x_col].notna())
+
+    distances = (x_numeric - data_x).abs().dropna()
+    if distances.empty:
+        return None
     nearest_idx = distances.idxmin()
     nearest_row = data.loc[nearest_idx]
 
