@@ -84,7 +84,7 @@ def _find_column_index(meta: pq.FileMetaData, col_name: str) -> int | None:
     top-level component so callers can pass Arrow field names directly.
     """
     schema = meta.schema
-    for i in range(schema.length):
+    for i in range(len(schema)):
         col = schema.column(i)
         path = col.path  # e.g. "a.b" for nested
         if path == col_name or path.split(".")[0] == col_name:
