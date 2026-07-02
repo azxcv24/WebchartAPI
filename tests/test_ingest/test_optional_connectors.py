@@ -48,6 +48,23 @@ def test_clickhouse_requires_query_or_table():
         b._resolve_query(RemoteSourceSpec(protocol="clickhouse", uri="clickhouse://h/db"))
 
 
+def test_clickhouse_table_identifier_validated():
+    b = ClickHouseIngestBackend()
+    # db.table is fine
+    spec_ok = RemoteSourceSpec(
+        protocol="clickhouse", uri="clickhouse://h/db", options={"table": "analytics.events"}
+    )
+    assert b._resolve_query(spec_ok)[0] == "SELECT * FROM analytics.events"
+    # injection attempt via table is rejected
+    spec_bad = RemoteSourceSpec(
+        protocol="clickhouse",
+        uri="clickhouse://h/db",
+        options={"table": "events; DROP TABLE users"},
+    )
+    with pytest.raises(ConnectorError):
+        b._resolve_query(spec_bad)
+
+
 @pytest.mark.parametrize(
     "backend_cls, scheme, lib",
     [

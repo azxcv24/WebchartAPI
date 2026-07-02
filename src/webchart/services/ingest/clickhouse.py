@@ -9,6 +9,7 @@ options: query (SQL) OR table (-> SELECT * FROM table), limit, secure
 """
 
 import logging
+import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -21,6 +22,9 @@ from webchart.services.ingest.upload import write_table_to_parquet
 
 logger = logging.getLogger("webchart.ingest.clickhouse")
 
+# db.table or table — plain identifiers only (no quotes, spaces, semicolons).
+_TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
+
 
 class ClickHouseIngestBackend:
     """Run a ClickHouse query and persist the result as Parquet."""
@@ -31,12 +35,22 @@ class ClickHouseIngestBackend:
 
     @staticmethod
     def _resolve_query(spec: RemoteSourceSpec) -> tuple[str, str]:
-        """Return (sql, display_name)."""
+        """Return (sql, display_name).
+
+        options.query is arbitrary SQL by design. options.table is validated
+        as a bare [db.]table identifier before interpolation so it can't smuggle
+        SQL (and so "table" means what it says).
+        """
         query = spec.options.get("query")
         table = spec.options.get("table")
         if query:
             return query, (table or "clickhouse_query")
         if table:
+            if not _TABLE_RE.match(table):
+                raise ConnectorError(
+                    f"Invalid table identifier: {table!r} "
+                    "(expected [database.]table); use options.query for complex SQL"
+                )
             return f"SELECT * FROM {table}", table
         raise ConnectorError(
             "ClickHouse connector requires either options.query or options.table"
