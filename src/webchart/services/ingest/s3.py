@@ -14,9 +14,10 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from webchart.core.concurrency import run_in_thread
-from webchart.core.errors import ConnectorError
+from webchart.core.errors import ConnectorError, WebchartError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
+    enforce_size,
     temp_download_path,
     validate_remote_format,
 )
@@ -91,8 +92,15 @@ class S3IngestBackend:
 
         def _download() -> None:
             bucket, key = self._parse(spec.uri)
+            client = self._client(spec)
             try:
-                self._client(spec).download_file(bucket, key, str(temp_path))
+                # Reject oversized objects up front via ContentLength.
+                head = client.head_object(Bucket=bucket, Key=key)
+                enforce_size(int(head.get("ContentLength", 0)), suffix, spec.uri)
+                client.download_file(bucket, key, str(temp_path))
+            except WebchartError:
+                temp_path.unlink(missing_ok=True)
+                raise
             except Exception as e:
                 temp_path.unlink(missing_ok=True)
                 raise ConnectorError(f"S3 download failed for {spec.uri}: {e}") from e

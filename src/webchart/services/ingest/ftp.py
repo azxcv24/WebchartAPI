@@ -12,6 +12,7 @@ from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import ConnectorError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
+    enforce_size,
     require_lib,
     temp_download_path,
     validate_remote_format,
@@ -58,5 +59,12 @@ class FtpIngestBackend:
         except Exception as e:
             temp_path.unlink(missing_ok=True)
             raise ConnectorError(f"FTP download failed for {spec.uri}: {e}") from e
+
+        # Post-hoc size cap (aioftp has no simple mid-stream limit hook).
+        try:
+            enforce_size(temp_path.stat().st_size, suffix, spec.uri)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
 
         return await run_in_thread(convert_to_parquet, temp_path, dataset_id)

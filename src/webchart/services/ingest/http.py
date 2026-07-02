@@ -96,5 +96,9 @@ class HttpIngestBackend:
         except httpx.HTTPError as e:
             temp_path.unlink(missing_ok=True)
             raise ConnectorError(f"HTTP download failed for {spec.uri}: {e}") from e
+        except Exception:
+            # e.g. OSError mid-write (disk full) — don't leak the partial file
+            temp_path.unlink(missing_ok=True)
+            raise
 
         return await run_in_thread(convert_to_parquet, temp_path, dataset_id)

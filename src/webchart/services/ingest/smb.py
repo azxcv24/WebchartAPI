@@ -6,14 +6,14 @@ options: port (default 445)
 """
 
 import logging
-import shutil
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from webchart.core.concurrency import run_in_thread
-from webchart.core.errors import ConnectorError
+from webchart.core.errors import ConnectorError, WebchartError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
+    copy_capped,
     require_lib,
     temp_download_path,
     validate_remote_format,
@@ -73,8 +73,10 @@ class SmbIngestBackend:
         def _download() -> None:
             try:
                 with smbclient.open_file(unc, mode="rb", **open_kwargs) as src:
-                    with open(temp_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+                    copy_capped(src, temp_path, suffix, spec.uri)
+            except WebchartError:
+                temp_path.unlink(missing_ok=True)
+                raise
             except Exception as e:
                 temp_path.unlink(missing_ok=True)
                 raise ConnectorError(f"SMB download failed for {spec.uri}: {e}") from e

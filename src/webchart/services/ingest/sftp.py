@@ -2,7 +2,8 @@
 
 URI:    sftp://host[:port]/path/file.csv
 creds:  username, password  and/or  private_key (PEM text), passphrase
-options: known_hosts ('strict' to verify; default disables verification)
+options: known_hosts — host-key verification is ON by default; set a path
+         to a known_hosts file, or "insecure" to explicitly disable it
 """
 
 import logging
@@ -13,6 +14,7 @@ from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import ConnectorError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
+    enforce_size,
     require_lib,
     temp_download_path,
     validate_remote_format,
@@ -65,9 +67,16 @@ class SftpIngestBackend:
                 raise ConnectorError(f"Invalid SFTP private key: {e}") from e
             connect_kwargs["client_keys"] = [key]
 
-        # Default: skip host-key verification unless options.known_hosts=='strict'.
-        if spec.options.get("known_hosts") != "strict":
+        # Host-key verification is ON by default (uses the system known_hosts).
+        # options.known_hosts:
+        #   - a path string -> verify against that known_hosts file
+        #   - "insecure"    -> explicit opt-out (disables verification)
+        #   - unset/other   -> default asyncssh verification
+        kh = spec.options.get("known_hosts")
+        if kh == "insecure":
             connect_kwargs["known_hosts"] = None
+        elif kh:
+            connect_kwargs["known_hosts"] = kh
 
         try:
             async with asyncssh.connect(**connect_kwargs) as conn:
@@ -76,5 +85,12 @@ class SftpIngestBackend:
         except Exception as e:
             temp_path.unlink(missing_ok=True)
             raise ConnectorError(f"SFTP download failed for {spec.uri}: {e}") from e
+
+        # Post-hoc size cap.
+        try:
+            enforce_size(temp_path.stat().st_size, suffix, spec.uri)
+        except Exception:
+            temp_path.unlink(missing_ok=True)
+            raise
 
         return await run_in_thread(convert_to_parquet, temp_path, dataset_id)

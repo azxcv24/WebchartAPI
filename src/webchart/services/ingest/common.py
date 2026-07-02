@@ -46,6 +46,38 @@ def size_limit_for(suffix: str) -> int:
     return settings.max_upload_size
 
 
+def enforce_size(num_bytes: int, suffix: str, uri: str) -> None:
+    """Raise FileTooLargeError if a downloaded object exceeds the cap."""
+    from webchart.core.errors import FileTooLargeError
+
+    limit = size_limit_for(suffix)
+    if num_bytes > limit:
+        raise FileTooLargeError(num_bytes, limit)
+
+
+def copy_capped(src, dst_path: Path, suffix: str, uri: str, chunk: int = 1 << 20) -> int:
+    """Stream a file-like `src` to dst_path, aborting if the size cap is hit.
+
+    Deletes the partial file and raises FileTooLargeError on overflow.
+    Returns the number of bytes written.
+    """
+    from webchart.core.errors import FileTooLargeError
+
+    limit = size_limit_for(suffix)
+    written = 0
+    with open(dst_path, "wb") as out:
+        while True:
+            block = src.read(chunk)
+            if not block:
+                break
+            written += len(block)
+            if written > limit:
+                dst_path.unlink(missing_ok=True)
+                raise FileTooLargeError(written, limit)
+            out.write(block)
+    return written
+
+
 def require_lib(module_name: str, extra: str) -> ModuleType:
     """Import an optional connector dependency or raise a clear ConnectorError."""
     try:
