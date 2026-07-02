@@ -40,7 +40,12 @@ async def close_redis() -> None:
     global _pool
     async with _init_lock:
         if _pool is not None:
-            await _pool.close()
+            # aclose() is the non-deprecated async close in redis-py >= 5.0.1.
+            closer = getattr(_pool, "aclose", None)
+            if closer is not None:
+                await closer()
+            else:  # pragma: no cover - older redis-py fallback
+                await _pool.close()
             _pool = None
 
 
