@@ -2,15 +2,13 @@
 
 import logging
 
-import numpy as np
 import pandas as pd
 
 from webchart.core.concurrency import run_in_thread
 from webchart.core.math_utils import Viewport
-from webchart.models.session import SessionState, ViewportWindow
+from webchart.models.session import SessionState
 from webchart.models.ws_messages import HoverDataMessage
 from webchart.services.data.access import read_window
-from webchart.services.data.downsample import downsample
 
 logger = logging.getLogger("webchart.session.interaction")
 

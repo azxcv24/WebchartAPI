@@ -57,6 +57,9 @@ src = ["src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+# UP042: `str, Enum` is intentional (JSON-serializable enums for Pydantic v2);
+# we don't switch to StrEnum to avoid changing str() semantics.
+ignore = ["UP042"]
 
 [tool.mypy]
 python_version = "3.11"

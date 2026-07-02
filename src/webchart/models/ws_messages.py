@@ -2,7 +2,6 @@
 
 from pydantic import BaseModel
 
-
 # --- Client → Server ---
 
 class ViewportChangeMessage(BaseModel):

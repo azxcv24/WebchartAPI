@@ -9,10 +9,10 @@ import io
 import logging
 
 import matplotlib
+import pandas as pd
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_svg import FigureCanvasSVG
 from matplotlib.figure import Figure
-import pandas as pd
 
 from webchart.models.chart import ChartSpec, ChartType, ImageFormat
 

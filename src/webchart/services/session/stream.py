@@ -12,7 +12,6 @@ from webchart.cache.redis_cache import tile_spec_hash
 from webchart.models.session import ViewportWindow
 from webchart.models.ws_messages import (
     ErrorMessage,
-    HoverDataMessage,
     HoverMessage,
     ScrollMessage,
     TileInfo,
@@ -45,7 +44,10 @@ async def handle_ws_session(websocket: WebSocket, session_id: str) -> None:
     if state.owner_key_hash is not None:
         if hash_api_key(ws_api_key(websocket)) != state.owner_key_hash:
             await websocket.send_json(
-                ErrorMessage(code="FORBIDDEN", message="Session belongs to another caller").model_dump()
+                ErrorMessage(
+                    code="FORBIDDEN",
+                    message="Session belongs to another caller",
+                ).model_dump()
             )
             await websocket.close(code=4403)
             return

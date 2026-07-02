@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, UploadFile, File, Query
+from fastapi import APIRouter, BackgroundTasks, File, Query, UploadFile
 
 from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
@@ -13,7 +13,6 @@ from webchart.core.errors import WebchartError, webchart_error_to_http
 from webchart.models.dataset import (
     DatasetCreateResponse,
     DatasetDetailResponse,
-    DatasetMeta,
     DatasetPreviewResponse,
     DatasetStatus,
     PyramidBuildRequest,

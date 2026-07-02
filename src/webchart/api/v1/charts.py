@@ -5,7 +5,6 @@ import uuid
 from fastapi import APIRouter
 from fastapi.responses import Response
 
-from webchart.cache.redis_cache import chart_spec_hash
 from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import WebchartError, webchart_error_to_http
 from webchart.models.chart import ChartSpec, ImageFormat, RenderResult

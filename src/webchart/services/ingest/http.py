@@ -9,13 +9,12 @@ options: header_<Name> entries become request headers
 
 import logging
 from pathlib import Path
+from urllib.parse import urlparse
 
 from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import ConnectorError, FileTooLargeError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
-from urllib.parse import urlparse
-
 from webchart.services.ingest.common import (
     guard_egress_host,
     size_limit_for,

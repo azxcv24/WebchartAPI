@@ -3,13 +3,11 @@
 import asyncio
 import logging
 
-import pandas as pd
-
 from webchart.cache import redis_cache
 from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
 from webchart.core.math_utils import visible_tile_indices
-from webchart.models.chart import ChartSpec, ChartType
+from webchart.models.chart import ChartSpec
 from webchart.models.dataset import DatasetMeta
 from webchart.services.data.access import get_dataset_meta, read_window
 from webchart.services.data.downsample import downsample
