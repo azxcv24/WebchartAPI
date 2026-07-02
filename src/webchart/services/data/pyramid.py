@@ -56,8 +56,13 @@ def has_pyramid(meta: DatasetMeta, x_column: str) -> bool:
 # --- Level selection -------------------------------------------------------
 
 def level_for_zoom(info: PyramidInfo, zoom: int) -> int | None:
-    """Pyramid level for an interactive tile zoom, or None to use base data."""
-    extra = round(math.log2(max(1, info.points_per_tile)))
+    """Pyramid level for an interactive tile zoom, or None to use base data.
+
+    A tile at zoom Z spans 1/2^Z of the x range. Level L has 2^L buckets
+    (2 points each), so a tile covers 2^(L-Z) buckets = 2^(L-Z+1) points.
+    Setting that to points_per_tile gives L = Z + log2(points_per_tile) - 1.
+    """
+    extra = round(math.log2(max(2, info.points_per_tile))) - 1
     ideal = zoom + extra
     if ideal > info.max_level:
         return None
