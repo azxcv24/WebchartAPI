@@ -18,6 +18,7 @@ from webchart.core.errors import ConnectorError, WebchartError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
     enforce_size,
+    guard_egress_host,
     temp_download_path,
     validate_remote_format,
 )
@@ -89,6 +90,12 @@ class S3IngestBackend:
         dataset_id = dest.name
         suffix = validate_remote_format(spec.uri)
         temp_path = temp_download_path(dataset_id, suffix)
+
+        # Guard the host we'll actually contact: a custom endpoint (MinIO)
+        # if set, otherwise the AWS S3 regional endpoint.
+        endpoint = spec.options.get("endpoint_url")
+        if endpoint:
+            guard_egress_host(urlparse(endpoint).hostname)
 
         def _download() -> None:
             bucket, key = self._parse(spec.uri)

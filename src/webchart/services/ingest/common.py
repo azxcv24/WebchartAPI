@@ -7,7 +7,9 @@ temp-path allocation, and optional-dependency loading.
 """
 
 import importlib
+import ipaddress
 import logging
+import socket
 from pathlib import Path
 from types import ModuleType
 from urllib.parse import unquote, urlparse
@@ -16,6 +18,44 @@ from webchart.config import settings
 from webchart.core.errors import ConnectorError, UnsupportedFormatError
 
 logger = logging.getLogger("webchart.ingest.connectors")
+
+
+def _is_blocked_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True  # unparseable -> refuse
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_multicast
+        or addr.is_unspecified
+    )
+
+
+def guard_egress_host(host: str | None) -> None:
+    """Refuse hosts that resolve to private/loopback/link-local addresses.
+
+    Mitigates SSRF (e.g. cloud metadata at 169.254.169.254, internal
+    services). No-op when settings.block_private_egress is False.
+    """
+    if not settings.block_private_egress:
+        return
+    if not host:
+        raise ConnectorError("Missing host in URI")
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except socket.gaierror as e:
+        raise ConnectorError(f"Cannot resolve host {host!r}: {e}") from e
+    for info in infos:
+        ip = info[4][0]
+        if _is_blocked_ip(ip):
+            raise ConnectorError(
+                f"Refusing to fetch from private/loopback address for host {host!r} "
+                f"({ip}); set WEBCHART_BLOCK_PRIVATE_EGRESS=false to allow"
+            )
 
 
 def remote_suffix(uri: str) -> str:

@@ -43,6 +43,22 @@ async def test_http_download_and_convert(http_server, tmp_data_dir):
     assert {c.name for c in meta.columns} == {"x", "y"}
 
 
+async def test_http_ssrf_guard_blocks_localhost(http_server, tmp_data_dir, monkeypatch):
+    from webchart.config import settings
+    from webchart.core.errors import ConnectorError
+
+    monkeypatch.setattr(settings, "block_private_egress", True)
+    base_url, serve_dir = http_server
+    (serve_dir / "data.csv").write_text("x,y\n1,2\n")
+
+    backend = HttpIngestBackend()
+    spec = RemoteSourceSpec(protocol="http", uri=f"{base_url}/data.csv")
+    # validate returns False, and ingest refuses with ConnectorError
+    assert await backend.validate_source(spec) is False
+    with pytest.raises(ConnectorError):
+        await backend.ingest_to_parquet(spec, tmp_data_dir / "datasets" / "ds-ssrf")
+
+
 async def test_http_404_raises_connector_error(http_server, tmp_data_dir):
     from webchart.core.errors import ConnectorError
 

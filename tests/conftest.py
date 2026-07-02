@@ -48,6 +48,12 @@ def disable_auth(monkeypatch):
     monkeypatch.setattr(settings, "api_keys", [])
 
 
+@pytest.fixture(autouse=True)
+def allow_local_egress(monkeypatch):
+    """Tests hit localhost servers; disable the SSRF private-range guard."""
+    monkeypatch.setattr(settings, "block_private_egress", False)
+
+
 @pytest.fixture
 def require_auth(monkeypatch):
     """Opt-in: enable API key auth for a single test."""

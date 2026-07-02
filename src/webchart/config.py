@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     pyramid_max_points: int = 2_000_000  # cap on rows in the finest level
     pyramid_max_level: int = 20  # hard cap on pyramid depth
 
+    # SSRF protection for HTTP/S3 connectors. When True (default), connectors
+    # refuse hosts that resolve to private/loopback/link-local addresses.
+    # Set False only in trusted networks where fetching internal URLs is
+    # intended (e.g. an in-cluster MinIO without a public endpoint).
+    block_private_egress: bool = True
+
     # Rendering
     render_pool_size: int = 8
     tile_size: int = 512
