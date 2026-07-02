@@ -55,18 +55,32 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     swap in a Redis-backed implementation.
     """
 
+    _SWEEP_EVERY = 500  # sweep stale keys every N requests
+
     def __init__(self, app) -> None:
         super().__init__(app)
         self._window_s = 60.0
         self._lock = threading.Lock()
         self._hits: dict[str, deque[float]] = {}
+        self._since_sweep = 0
 
     def _client_key(self, request: Request) -> str:
         api_key = request.headers.get(settings.api_key_header)
         if api_key:
-            return f"key:{api_key}"
+            # Hash so the raw key never lives as a dict key in memory.
+            from webchart.api.auth import hash_api_key
+
+            return f"key:{hash_api_key(api_key)}"
         client = request.client
         return f"ip:{client.host if client else 'unknown'}"
+
+    def _sweep(self, cutoff: float) -> None:
+        """Drop keys whose window is fully expired (called under the lock)."""
+        stale = [
+            k for k, b in self._hits.items() if not b or b[-1] < cutoff
+        ]
+        for k in stale:
+            del self._hits[k]
 
     async def dispatch(self, request: Request, call_next):
         if not settings.rate_limit_enabled or request.url.path == "/health":
@@ -78,6 +92,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         cutoff = now - self._window_s
 
         with self._lock:
+            self._since_sweep += 1
+            if self._since_sweep >= self._SWEEP_EVERY:
+                self._sweep(cutoff)
+                self._since_sweep = 0
+
             bucket = self._hits.setdefault(key, deque())
             while bucket and bucket[0] < cutoff:
                 bucket.popleft()
