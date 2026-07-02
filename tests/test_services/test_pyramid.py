@@ -80,4 +80,20 @@ def test_x_range_filter(big_dataset):
     full = read_pyramid_window(big_dataset, "x", level)
     windowed = read_pyramid_window(big_dataset, "x", level, x_range=(0, 1000))
     assert len(windowed) < len(full)
-    assert windowed["x"].max() <= 1000
+    # One neighbor point beyond the edge is kept so lines reach the tile edge.
+    assert windowed["x"].max() <= 1000 + _neighbor_slack(full)
+
+
+def _neighbor_slack(full_df):
+    # spacing between adjacent pyramid points near x=1000, used as tolerance
+    xs = full_df["x"].to_numpy()
+    diffs = xs[1:] - xs[:-1]
+    return float(diffs.max()) if len(diffs) else 0.0
+
+
+def test_empty_window_returns_none_for_fallback(big_dataset):
+    info = build_pyramid(big_dataset, "x", columns=["y"])
+    # A range entirely outside the data yields no rows -> None (so the
+    # renderer falls back to base instead of drawing a blank tile).
+    out = read_pyramid_window(big_dataset, "x", info.max_level, x_range=(10**9, 10**9 + 1))
+    assert out is None

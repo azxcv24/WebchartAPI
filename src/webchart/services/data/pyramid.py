@@ -86,21 +86,37 @@ def read_pyramid_window(
     x_range: tuple[float, float] | None = None,
     columns: list[str] | None = None,
 ) -> pd.DataFrame | None:
-    """Read a pyramid level (small file), optionally filtered to x_range."""
+    """Read a pyramid level (small file), optionally filtered to x_range.
+
+    Returns None when the level file is missing OR the windowed slice is
+    empty, so the caller can fall back to the base data instead of drawing
+    a blank tile. The x_range filter keeps one neighboring point on each
+    side so drawn lines reach the tile edges.
+    """
     path = level_path(dataset_id, x_column, level)
     if not path.exists():
         return None
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(path).sort_values(x_column).reset_index(drop=True)
 
     if x_range is not None:
         lo, hi = x_range
-        df = df[(df[x_column] >= lo) & (df[x_column] <= hi)]
+        inside = (df[x_column] >= lo) & (df[x_column] <= hi)
+        idx = df.index[inside]
+        if len(idx):
+            # extend by one row on each side to avoid clipped edge lines
+            start = max(0, int(idx[0]) - 1)
+            stop = min(len(df), int(idx[-1]) + 2)
+            df = df.iloc[start:stop]
+        else:
+            df = df.iloc[0:0]
 
     if columns:
         keep = [c for c in [x_column, *columns] if c in df.columns]
         df = df[list(dict.fromkeys(keep))]
 
-    return df.sort_values(x_column).reset_index(drop=True)
+    if df.empty:
+        return None
+    return df.reset_index(drop=True)
 
 
 # --- Building --------------------------------------------------------------
