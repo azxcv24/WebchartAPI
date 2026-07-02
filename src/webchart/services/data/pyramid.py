@@ -53,6 +53,31 @@ def has_pyramid(meta: DatasetMeta, x_column: str) -> bool:
     return x_column in meta.pyramids
 
 
+def usable_pyramid(meta: DatasetMeta, x_column: str) -> PyramidInfo | None:
+    """Return the pyramid for x_column only if it matches the current data.
+
+    Guards against a stale pyramid after re-ingest: the build recorded the
+    base row count and x bounds, and the renderer derives tile bounds from
+    the current column stats. If those diverged, the pyramid buckets no
+    longer line up, so we return None and the caller uses the base data.
+    """
+    info = meta.pyramids.get(x_column)
+    if info is None:
+        return None
+    if meta.row_count and info.source_row_count and meta.row_count != info.source_row_count:
+        return None
+    col = next((c for c in meta.columns if c.name == x_column), None)
+    if col is not None and col.min_value is not None and col.max_value is not None:
+        try:
+            cur_min, cur_max = float(col.min_value), float(col.max_value)
+        except (TypeError, ValueError):
+            return None
+        if info.x_min is not None and info.x_max is not None:
+            if cur_min != info.x_min or cur_max != info.x_max:
+                return None
+    return info
+
+
 # --- Level selection -------------------------------------------------------
 
 def level_for_zoom(info: PyramidInfo, zoom: int) -> int | None:
@@ -260,6 +285,7 @@ def build_pyramid(
         total_points=int(len(finest)),
         x_min=xmin,
         x_max=xmax,
+        source_row_count=row_count,
     )
 
     # Persist into meta.json (re-read to avoid clobbering concurrent updates).

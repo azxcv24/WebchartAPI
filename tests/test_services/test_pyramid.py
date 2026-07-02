@@ -53,6 +53,27 @@ def test_meta_records_pyramid(big_dataset):
     meta = get_dataset_meta(big_dataset)
     assert "x" in meta.pyramids
     assert meta.pyramids["x"].method == "minmax"
+    assert meta.pyramids["x"].source_row_count == meta.row_count
+
+
+def test_usable_pyramid_rejects_stale(big_dataset):
+    from webchart.services.data.access import get_dataset_meta
+    from webchart.services.data.pyramid import usable_pyramid
+
+    build_pyramid(big_dataset, "x", columns=["y"])
+    meta = get_dataset_meta(big_dataset)
+    assert usable_pyramid(meta, "x") is not None
+
+    # Simulate a re-ingest that changed the row count -> pyramid is stale.
+    meta.row_count += 1
+    assert usable_pyramid(meta, "x") is None
+
+    # Or the x bounds shifted.
+    meta = get_dataset_meta(big_dataset)
+    for c in meta.columns:
+        if c.name == "x":
+            c.max_value = float(c.max_value) + 1000
+    assert usable_pyramid(meta, "x") is None
 
 
 def test_non_numeric_x_rejected(tmp_data_dir):

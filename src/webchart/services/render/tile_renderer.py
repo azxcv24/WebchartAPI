@@ -13,7 +13,11 @@ from webchart.models.chart import ChartSpec, ChartType
 from webchart.models.dataset import DatasetMeta
 from webchart.services.data.access import get_dataset_meta, read_window
 from webchart.services.data.downsample import downsample
-from webchart.services.data.pyramid import level_for_zoom, read_pyramid_window
+from webchart.services.data.pyramid import (
+    level_for_zoom,
+    read_pyramid_window,
+    usable_pyramid,
+)
 from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
 
 logger = logging.getLogger("webchart.render.tile")
@@ -46,7 +50,7 @@ def _read_tile_data(
     or the zoom is finer than the pyramid was built for (where the base
     read is already cheap because the x range is narrow).
     """
-    info = meta.pyramids.get(x_col)
+    info = usable_pyramid(meta, x_col)
     if info is not None:
         level = level_for_zoom(info, zoom)
         if level is not None:

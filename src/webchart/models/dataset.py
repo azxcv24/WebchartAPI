@@ -36,6 +36,10 @@ class PyramidInfo(BaseModel):
     total_points: int = 0  # rows in the finest level
     x_min: float | None = None
     x_max: float | None = None
+    # Fingerprint of the base data the pyramid was built against. If the
+    # dataset is re-ingested and these no longer match the current meta,
+    # the pyramid is stale and must not be used.
+    source_row_count: int = 0
     built_at: datetime = Field(default_factory=_utcnow)
 
 
