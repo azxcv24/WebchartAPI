@@ -26,7 +26,7 @@ def ws_api_key(websocket: WebSocket) -> str | None:
     )
 
 
-def _key_is_valid(candidate: str | None) -> bool:
+def key_is_valid(candidate: str | None) -> bool:
     if not settings.api_keys:
         # No keys configured -> auth disabled (dev mode).
         return True
@@ -39,7 +39,7 @@ async def require_api_key(
     api_key: str | None = Header(default=None, alias="X-API-Key"),
 ) -> None:
     """FastAPI dependency: enforce X-API-Key header on HTTP routes."""
-    if not _key_is_valid(api_key):
+    if not key_is_valid(api_key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail={"code": "UNAUTHORIZED", "message": "Invalid or missing API key"},
@@ -57,7 +57,7 @@ async def require_api_key_ws(websocket: WebSocket) -> bool:
     if not settings.api_keys:
         return True
     candidate = ws_api_key(websocket)
-    if not _key_is_valid(candidate):
+    if not key_is_valid(candidate):
         await websocket.close(code=4401, reason="invalid api key")
         return False
     return True

@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     # Set WEBCHART_API_KEYS='["key1", "key2"]' in production.
     api_keys: list[str] = []
     api_key_header: str = "X-API-Key"
+    # 임베드 이미지·XYZ 타일 URL 토큰의 HMAC 비밀값. 비우면 api_keys에서 만든다
+    # (키를 바꾸면 기존 임베드 URL이 무효가 되므로, 운영에서는 따로 지정하는 것이 좋다).
+    embed_secret: str = ""
 
     # Rate limiting (per API key, or per client IP when auth is off).
     # In-memory limiter scoped to the worker process; for multi-worker setups

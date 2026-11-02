@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webchart 뷰어</title>
+<style>
+  :root { color-scheme: light; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; background: #fafafa; color: #222; }
+  form { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; margin-bottom: 12px; }
+  label { display: flex; flex-direction: column; font-size: 12px; gap: 2px; }
+  input, select, button { font: inherit; padding: 4px 6px; }
+  #chart { background: #fff; border: 1px solid #ddd; }
+  #status { font-size: 12px; color: #555; margin-top: 8px; min-height: 1.4em; }
+  .help { font-size: 12px; color: #777; }
+</style>
+</head>
+<body>
+<form id="setup">
+  <label>API 키 <input id="api-key" type="password" placeholder="(인증 꺼짐이면 비움)"></label>
+  <label>데이터셋 <select id="dataset"></select></label>
+  <label>x 컬럼 <select id="x-column"></select></label>
+  <label>y 컬럼 <select id="y-column"></select></label>
+  <label>레이어
+    <select id="kind">
+      <option>line</option><option>area</option><option>band</option><option>bar</option>
+      <option>candlestick</option><option>scatter</option><option>heatmap</option>
+    </select>
+  </label>
+  <label>y범위
+    <select id="y-policy">
+      <option value="viewport">viewport (보이는 구간)</option>
+      <option value="global">global (전체, 캐시 효율)</option>
+    </select>
+  </label>
+  <label>y2 막대(선택) <select id="y2-column"><option value="">없음</option></select></label>
+  <button type="submit">열기</button>
+  <span class="help">드래그: 이동 · 휠: 줌(2배 단위) · Shift+드래그: 구간 통계</span>
+</form>
+<div id="chart"></div>
+<div id="status"></div>
+<script type="module">
+import { WebChart } from "./webchart.js";
+
+const $ = (id) => document.getElementById(id);
+let chart = null;
+let schema = [];
+
+async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if ($("api-key").value) headers["X-API-Key"] = $("api-key").value;
+  const response = await fetch(path, { ...options, headers });
+  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+  return response.json();
+}
+
+function fill(select, values, keep = []) {
+  select.replaceChildren(...keep, ...values.map((v) => new Option(v, v)));
+}
+
+async function loadDatasets() {
+  const datasets = await api("/api/v1/datasets");
+  fill($("dataset"), datasets.filter((d) => d.status === "ready").map((d) => d.dataset_id));
+  await loadSchema();
+}
+
+async function loadSchema() {
+  if (!$("dataset").value) return;
+  schema = (await api(`/api/v1/datasets/${$("dataset").value}/schema`)).columns;
+  const axes = schema.filter((c) => c.kind !== "other").map((c) => c.name);
+  const numeric = schema.filter((c) => c.kind === "numeric").map((c) => c.name);
+  fill($("x-column"), axes);
+  fill($("y-column"), numeric);
+  fill($("y2-column"), numeric, [new Option("없음", "")]);
+}
+
+$("dataset").addEventListener("change", loadSchema);
+$("api-key").addEventListener("change", loadDatasets);
+
+$("setup").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const datasetId = $("dataset").value;
+  const x = schema.find((c) => c.name === $("x-column").value);
+  const layers = [{ kind: $("kind").value, column: $("y-column").value }];
+  if ($("y2-column").value) layers.push({ kind: "bar", column: $("y2-column").value, agg: "sum", axis: "y2", style: { opacity: 0.4 } });
+  const domain = [x.min_numeric, x.max_numeric];
+  const session = await api("/api/v1/sessions", {
+    method: "POST",
+    body: JSON.stringify({
+      dataset_id: datasetId,
+      chart_config: {
+        dataset_id: datasetId, x_axis: { column: x.name }, layers,
+        axes: { y: { range_policy: $("y-policy").value }, y2: { range_policy: $("y-policy").value } },
+      },
+      viewport: { x_range: domain, zoom: 0 },
+    }),
+  });
+  chart?.close();
+  $("chart").replaceChildren();
+  chart = new WebChart($("chart"), {
+    sessionId: session.session_id, apiKey: $("api-key").value || undefined, domain,
+  });
+  chart.onFrameEnd = (end) => {
+    const nodes = $("chart").querySelectorAll("*").length + 1;
+    $("status").textContent =
+      `프레임 #${end.req_id}: 타일 ${end.sent}장 (캐시 ${end.cached}), ${end.elapsed_ms.toFixed(0)} ms, ` +
+      `exact=${end.exact}, 줌 ${chart.zoom}, 차트 DOM 노드 ${nodes}개`;
+  };
+});
+
+loadDatasets().catch((error) => ($("status").textContent = String(error)));
+</script>
+</body>
+</html>

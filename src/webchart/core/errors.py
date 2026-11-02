@@ -68,6 +68,7 @@ def webchart_error_to_http(err: WebchartError) -> HTTPException:
     status_map = {
         "DATASET_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "SESSION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "CHART_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "UNSUPPORTED_FORMAT": status.HTTP_400_BAD_REQUEST,
         "PROTOCOL_NOT_SUPPORTED": status.HTTP_400_BAD_REQUEST,
         "FILE_TOO_LARGE": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
