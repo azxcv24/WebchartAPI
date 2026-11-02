@@ -176,7 +176,7 @@ async def chart_image(
     spec = spec.model_copy(update=overrides)
     meta = await run_in_thread(get_dataset_meta, spec.dataset_id)
     etag = hashlib.sha256(
-        f"{chart_id}:{meta.data_version}:{x0}:{x1}:{w}:{h}:{extension.value}".encode()
+        f"{chart_id}:{meta.data_version}:{meta.generation}:{x0}:{x1}:{w}:{h}:{extension.value}".encode()
     ).hexdigest()[:24]
 
     rendered: list[RenderedChart] = []
@@ -252,7 +252,7 @@ _MAX_PLANNING_ZOOM = 10
 
 
 def _zoom_plan(chart_id: str, meta: DatasetMeta, spec: ChartSpec, zoom: int, dpr: int) -> FramePlan:
-    key = (chart_id, meta.data_version, zoom, dpr)
+    key = (chart_id, f"{meta.data_version}:{meta.generation}", zoom, dpr)
     plan = _ZOOM_PLANS.get(key)
     if plan is None:
         lattice = lattice_for(meta, spec.x_axis.column, settings.tile_size)

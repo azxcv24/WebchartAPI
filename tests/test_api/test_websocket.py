@@ -176,3 +176,34 @@ def test_select_returns_exact_range_stats(client):
     z = stats["series"]["z"]
     assert (z["count"], z["min"], z["max"], z["first"], z["last"]) == (100, 200, 398, 200, 398)
     assert z["mean"] == 299.0
+
+
+def test_append_pushes_update_and_reuses_untouched_tiles(client):
+    sid = _session(client)
+    dsid = client.get(f"/api/v1/sessions/{sid}").json()["dataset_id"]
+    with client.websocket_connect(f"/api/v1/ws/{sid}") as ws:
+        viewport = {"type": "viewport", "x_range": [0, ROWS], "zoom": 3, "width_px": 4096}
+        ws.send_json({**viewport, "req_id": 1})
+        _, first_tiles, first_end = _receive_frame(ws, 1)
+        assert first_end["cached"] == 0
+
+        # 4,000~4,010 구간에 행 추가 → 그 구간 타일만 새로 그려야 한다
+        x = [4_000.5 + i for i in range(10)]
+        response = client.post(
+            f"/api/v1/datasets/{dsid}/rows",
+            json={"columns": {"x": x, "y": [0.0] * 10, "z": [9.0] * 10}},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["rows"] == 10 and body["generation"] == 1
+
+        pushed = ws.receive_json()
+        assert pushed["type"] == "data_appended" and pushed["generation"] == 1
+        low, high = pushed["x_range"]
+        assert low <= 4_000.5 and high >= 4_009.5
+
+        ws.send_json({**viewport, "req_id": 2})
+        _, tiles, end = _receive_frame(ws, 2)
+    assert end["sent"] == len(first_tiles)
+    # y범위는 global 정책(통계)이고 추가값이 기존 범위 안이라, 닿지 않은 타일은 캐시에서 온다
+    assert 0 < end["cached"] < end["sent"]

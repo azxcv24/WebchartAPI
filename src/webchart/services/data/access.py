@@ -49,7 +49,9 @@ def read_full(dataset_id: str) -> dd.DataFrame:
 
 def raw_store(meta: DatasetMeta) -> RawStore:
     """데이터셋의 원본 저장소 (data_version별로 재사용된다)."""
-    return raw_store_for(_dataset_dir(meta.dataset_id) / "data", meta.dataset_id, meta.data_version)
+    # 실시간 추가는 파일을 늘리므로 세대(generation)가 바뀌면 zone map을 새로 만든다
+    version = f"{meta.data_version}:{meta.generation}"
+    return raw_store_for(_dataset_dir(meta.dataset_id) / "data", meta.dataset_id, version)
 
 
 def read_window(

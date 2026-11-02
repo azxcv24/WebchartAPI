@@ -3,9 +3,10 @@
 import logging
 import uuid
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, BackgroundTasks, File, Query, UploadFile
+from pydantic import BaseModel, Field
 
 from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
@@ -92,9 +93,7 @@ async def connect_remote(
 
     async def _ingest() -> None:
         try:
-            await backend.ingest_to_parquet(
-                spec, settings.data_dir / "datasets" / dataset_id
-            )
+            await backend.ingest_to_parquet(spec, settings.data_dir / "datasets" / dataset_id)
             logger.info(f"Remote dataset {dataset_id} ingested successfully")
         except Exception as e:
             logger.error(f"Failed to ingest remote dataset {dataset_id}: {e}")
@@ -195,6 +194,45 @@ async def build_pyramid_endpoint(
         dataset_id=dataset_id,
         x_column=req.x_column,
         status="building",
+    )
+
+
+class AppendRowsRequest(BaseModel):
+    """열 형식 행 묶음: `{"columns": {"ts": [...], "price": [...]}}`.
+
+    시간 컬럼 값은 ISO 8601 문자열이다. 빠진 컬럼은 결측으로 채운다.
+    """
+
+    columns: dict[str, list[Any]] = Field(min_length=1)
+
+
+class AppendRowsResponse(BaseModel):
+    dataset_id: str
+    generation: int
+    rows: int
+    ranges: dict[str, tuple[float, float]]
+    grown_columns: list[str]
+
+
+@router.post("/{dataset_id}/rows", response_model=AppendRowsResponse)
+async def append_rows(dataset_id: str, request: AppendRowsRequest) -> AppendRowsResponse:
+    """행을 실시간으로 추가한다 (계획 문서 4.3).
+
+    피라미드는 다시 빌드하지 않고 추가된 행만 merge한다. 그림이 바뀐 x 구간의 타일만
+    캐시 키가 바뀌고, 그 데이터셋을 보는 WebSocket 세션에 `data_appended`가 간다.
+    """
+    from webchart.application.append import append_columns
+
+    try:
+        result = await run_in_thread(append_columns, dataset_id, request.columns)
+    except WebchartError as e:
+        raise webchart_error_to_http(e)
+    return AppendRowsResponse(
+        dataset_id=result.dataset_id,
+        generation=result.generation,
+        rows=result.rows,
+        ranges=result.ranges,
+        grown_columns=result.grown_columns,
     )
 
 

@@ -28,6 +28,7 @@ from matplotlib.axes import Axes
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.backends.backend_svg import FigureCanvasSVG
 from matplotlib.figure import Figure
+from PIL import Image
 
 from webchart.domain.geometry import XRange
 from webchart.domain.projection import Polyline
@@ -91,10 +92,11 @@ def paint_raster(
     height_px: int,
     dpr: int,
     background_color: str,
+    overdraw_px: int = 0,
 ) -> bytes:
     """`MatplotlibRenderer.render_raster`의 모듈 함수판 (그리기 프로세스 풀에 넘기기 위해)."""
     return MatplotlibRenderer().render_raster(
-        drawings, x_range, y_ranges, width_px, height_px, dpr, background_color
+        drawings, x_range, y_ranges, width_px, height_px, dpr, background_color, overdraw_px
     )
 
 
@@ -135,14 +137,18 @@ class MatplotlibRenderer:
         height_px: int,
         dpr: int = 1,
         background_color: str = "white",
+        overdraw_px: int = 0,
     ) -> bytes:
         """데이터 영역만 `width_px × height_px` PNG로 그린다.
 
         y_ranges가 None이면 matplotlib 자동 스케일을 쓴다 (오라클 정답에서만 쓴다).
         dpr > 1이면 dpi를 올려 선 굵기도 같은 비율로 커진다 (물리 크기 유지).
+        overdraw_px > 0이면 x_range는 양옆 여백을 포함한 범위이고, 폭 width_px + 2·overdraw_px로
+        그린 뒤 가운데 width_px만 잘라 낸다 (타일 경계 덧그리기).
         """
         dpi = BASE_DPI * dpr
-        figure = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
+        full_width_px = width_px + 2 * overdraw_px
+        figure = Figure(figsize=(full_width_px / dpi, height_px / dpi), dpi=dpi)
         canvas = FigureCanvasAgg(figure)
         figure.patch.set_alpha(0)
         main = figure.add_axes((0.0, 0.0, 1.0, 1.0))
@@ -158,7 +164,12 @@ class MatplotlibRenderer:
                 each.set_ylim(y_ranges[name].low, y_ranges[name].high)
 
         buffer = io.BytesIO()
-        figure.savefig(buffer, format="png", dpi=dpi)
+        if overdraw_px == 0:
+            figure.savefig(buffer, format="png", dpi=dpi)
+        else:
+            canvas.draw()
+            rgba = np.asarray(canvas.buffer_rgba())[:, overdraw_px : overdraw_px + width_px]
+            Image.fromarray(np.ascontiguousarray(rgba), "RGBA").save(buffer, format="png")
         del canvas
         return buffer.getvalue()
 

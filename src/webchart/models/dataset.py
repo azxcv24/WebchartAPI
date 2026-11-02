@@ -116,6 +116,18 @@ class PyramidInfo(BaseModel):
     built_at: datetime = Field(default_factory=_utcnow)
 
 
+class AppendRecord(BaseModel):
+    """실시간 추가 한 번이 바꾼 x 범위 (타일 캐시 무효화용, 계획 문서 4.3).
+
+    ranges: x 컬럼 → 그림이 바뀔 수 있는 닫힌 구간 [low, high] (정규 좌표).
+    추가된 행의 x 범위에, 그 앞뒤로 이어지는 기존 행까지 넓힌 구간이다 (선이 이어지는 구간).
+    여기 없는 컬럼은 전체가 바뀐 것으로 본다.
+    """
+
+    generation: int
+    ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
+
+
 class DatasetMeta(BaseModel):
     """데이터셋 메타데이터 (datasets/{id}/meta.json).
 
@@ -124,6 +136,9 @@ class DatasetMeta(BaseModel):
       이전 형식의 meta.json은 빈 문자열이다.
     - `sort_column`: 원본이 이 컬럼 오름차순으로 저장되어 있다 (계획 문서 2.7).
       None이면 정렬되지 않은 원본이다 (범위 읽기가 느리지만 결과는 같다).
+    - `x_domains`: x 컬럼별로 고정한 타일 격자 범위. 없으면 컬럼 통계(최솟값·최댓값)로 정한다.
+      피라미드를 만들거나 행을 추가하면 고정되고, 추가된 행이 밖에 있으면 2배씩 넓어진다.
+    - `generation`, `append_log`: 실시간 추가 횟수와 각 추가가 바꾼 x 범위 (타일 캐시 키에 쓴다).
     """
 
     dataset_id: str
@@ -131,6 +146,9 @@ class DatasetMeta(BaseModel):
     status: DatasetStatus = DatasetStatus.UPLOADING
     data_version: str = ""
     sort_column: str | None = None
+    x_domains: dict[str, tuple[float, float]] = Field(default_factory=dict)
+    generation: int = 0
+    append_log: list[AppendRecord] = Field(default_factory=list)
     row_count: int = 0
     size_bytes: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)

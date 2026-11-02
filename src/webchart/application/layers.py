@@ -92,20 +92,30 @@ PROJECTIONS: dict[LayerKind, Projection] = {
 }
 
 
+# 선으로 그리는 레이어. 선 굵기가 이웃 픽셀로 번지므로 타일 덧그리기 여백이 필요하다.
+STROKED_KINDS = frozenset({LayerKind.LINE, LayerKind.AREA})
+
+
 def project_layers(
     spec: ChartSpec,
     windows: WindowSet | None,
     densities: dict[int, DensityGrid],
     dpr: int,
+    fill_windows: WindowSet | None = None,
 ) -> list[LayerDrawing]:
-    """spec의 레이어를 순서대로 투영한다. densities는 레이어 번호 → 밀도 격자."""
+    """spec의 레이어를 순서대로 투영한다. densities는 레이어 번호 → 밀도 격자.
+
+    fill_windows: 선이 아닌 레이어(band, bar, candlestick)에 쓸 창. 타일에서는 덧그리기
+    여백을 뺀 창을 넘긴다 (막대 묶음이 타일 경계에서 시작해야 하므로). 없으면 windows.
+    """
     drawings = []
     for index, layer in enumerate(spec.layers):
         if index in densities:
             drawings.append(LayerDrawing(layer, densities[index]))
-        else:
-            assert windows is not None
-            drawings.append(LayerDrawing(layer, PROJECTIONS[layer.kind](layer, windows, dpr)))
+            continue
+        source = windows if layer.kind in STROKED_KINDS else (fill_windows or windows)
+        assert source is not None
+        drawings.append(LayerDrawing(layer, PROJECTIONS[layer.kind](layer, source, dpr)))
     return drawings
 
 

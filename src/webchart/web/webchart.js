@@ -110,6 +110,7 @@ export class WebChart {
     switch (message.type) {
       case "frame_begin":
         if (message.req_id !== this.frameReqId) return;  // 이미 새 요청을 보냈다
+        this.domain = { start: message.domain[0], end: message.domain[1] };
         this.frame = message;
         this.frameYKey.set(message.req_id, JSON.stringify(message.y_ranges));
         break;
@@ -125,6 +126,18 @@ export class WebChart {
         if (this.selection) this.selection.stats = message;
         this.onRangeStats?.(message);
         break;
+      case "data_appended": {
+        // 화면과 겹치면 다시 요청한다. 바뀌지 않은 타일은 서버 캐시에서 바로 온다.
+        const [low, high] = message.x_range ?? [-Infinity, Infinity];
+        const ratio = (message.domain[1] - message.domain[0]) / (this.domain.end - this.domain.start);
+        if (ratio !== 1) {
+          // 격자가 2배로 넓어지면 같은 줌 번호가 2배 넓은 x를 덮는다. 화면 배율을 유지한다.
+          this.zoom = Math.min(24, this.zoom + Math.round(Math.log2(ratio)));
+          this.domain = { start: message.domain[0], end: message.domain[1] };
+        }
+        if (ratio !== 1 || (low < this.viewEnd && high >= this.viewStart)) this.#requestViewport();
+        return;
+      }
       case "error":
         console.warn("webchart:", message.code, message.message);
         return;

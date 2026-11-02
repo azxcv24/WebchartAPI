@@ -25,6 +25,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from webchart.api.auth import hash_api_key, ws_api_key
 from webchart.application.axes import x_ticks, y_ticks
 from webchart.application.interaction import nearest_points, range_summary
+from webchart.application.live import DataAppended, dataset_events
 from webchart.application.tiles import (
     FramePlan,
     RenderedTile,
@@ -47,6 +48,7 @@ from webchart.models.ws_messages import (
     TILE_HEADER_MAGIC,
     Crosshair,
     CrosshairValue,
+    DataAppendedMessage,
     ErrorMessage,
     FrameBegin,
     FrameEnd,
@@ -156,6 +158,8 @@ async def handle_ws_session(websocket: WebSocket, session_id: str) -> None:
     connection = Connection(
         websocket, session_id, state, meta, asyncio.Semaphore(settings.render_pool_size)
     )
+    events = dataset_events.subscribe(state.dataset_id)
+    connection.tasks["events"] = asyncio.ensure_future(_forward_appends(connection, events))
     logger.info(f"WebSocket 연결: session={session_id}")
     try:
         await _receive_loop(connection)
@@ -163,6 +167,23 @@ async def handle_ws_session(websocket: WebSocket, session_id: str) -> None:
         logger.info(f"WebSocket 끊김: session={session_id}")
     finally:
         connection.cancel_all()
+        dataset_events.unsubscribe(state.dataset_id, events)
+
+
+async def _forward_appends(connection: Connection, events: "asyncio.Queue[DataAppended]") -> None:
+    """실시간 추가 알림을 클라이언트에 전달한다. 연결의 메타데이터도 새로 읽는다."""
+    x_column = connection.state.chart_config.x_axis.column
+    while True:
+        event = await events.get()
+        connection.meta = await run_in_thread(get_dataset_meta, event.dataset_id)
+        domain = lattice_for(connection.meta, x_column, settings.tile_size).domain
+        await connection.send_json(
+            DataAppendedMessage(
+                generation=event.generation,
+                x_range=event.ranges.get(x_column),
+                domain=domain.as_tuple(),
+            )
+        )
 
 
 async def _receive_loop(connection: Connection) -> None:
@@ -293,6 +314,7 @@ def _frame_begin(
         zoom=zoom,
         dpr=plan.dpr,
         tile_size_px=plan.lattice.tile_size_px * plan.dpr,
+        domain=plan.lattice.domain.as_tuple(),
         x_range=view.as_tuple(),
         tiles=tiles,
         y_ranges={name: r.as_tuple() for name, r in plan.y_ranges.items()},

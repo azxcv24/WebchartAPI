@@ -311,12 +311,25 @@ class PyramidReader:
         return result, is_exact
 
     def window(self, level: PyramidLevel, series: str, first: int, count: int) -> SeriesWindow:
-        """레벨의 버킷 `[first, first + count)`를 그대로 격자로 쓰는 창 (타일용, 정확)."""
-        grid = level.grid.sub_grid(first, count)
-        lead, trail = _neighbor_buckets(level, first, first + count)
+        """레벨의 버킷 `[first, first + count)`를 그대로 격자로 쓰는 창 (타일용, 정확).
+
+        레벨 밖으로 나가는 부분(타일 덧그리기 여백이 격자 끝을 넘을 때)은 빈 버킷이다.
+        """
+        width = level.grid.bucket_width
+        grid = BucketGrid(level.grid.origin + first * width, width, count)
+        low = min(max(first, 0), level.grid.bucket_count)
+        high = max(min(first + count, level.grid.bucket_count), low)
+        stats = BucketStats.concat(
+            [
+                BucketStats.empty(low - first),
+                level.stats(series, slice(low, high)),
+                BucketStats.empty(first + count - high),
+            ]
+        )
+        lead, trail = _neighbor_buckets(level, low, high)
         return SeriesWindow(
             grid=grid,
-            stats=level.stats(series, slice(first, first + count)),
+            stats=stats,
             lead=_single(level, series, lead),
             trail=_single(level, series, trail),
         )
@@ -400,11 +413,11 @@ def open_array(path: Path) -> npt.NDArray[Any]:
     """읽기 전용 mmap 배열."""
     key = (str(path), path.stat().st_ino)
     with _open_arrays_lock:
-        values = _open_arrays.get(key)
-        if values is not None:
+        cached = _open_arrays.get(key)
+        if cached is not None:
             _open_arrays.move_to_end(key)
-            return values
-    values = np.load(path, mmap_mode="r")
+            return cached
+    values: npt.NDArray[Any] = np.load(path, mmap_mode="r")
     with _open_arrays_lock:
         _open_arrays[key] = values
         while len(_open_arrays) > _MAX_OPEN_ARRAYS:
@@ -424,3 +437,124 @@ def remove_old_storage(pyramid_dir: Path, keep: str) -> None:
             shutil.rmtree(entry, ignore_errors=True)
         else:
             entry.unlink(missing_ok=True)
+
+
+# --- 실시간 추가 (계획 문서 4.3) ---------------------------------------------------------
+
+
+def merge_rows(
+    storage_dir: Path,
+    info: PyramidInfo,
+    x: npt.NDArray[np.float64],
+    values: dict[str, npt.NDArray[np.float64]],
+) -> None:
+    """추가된 행을 모든 레벨에 merge한다 (파일을 쓰기 가능한 mmap으로 열어 해당 버킷만 고친다).
+
+    x는 결측이 없어야 하고 피라미드 격자 안이어야 한다 (밖이면 먼저 grow_storage).
+    읽는 쪽은 같은 파일을 공유 매핑으로 보고 있어 바뀐 값이 바로 보인다. 쓰는 도중에 그린
+    타일은 이전 캐시 키(추가 전 세대)로 저장되므로, 추가가 끝난 뒤의 요청에는 쓰이지 않는다.
+    """
+    order = np.argsort(x, kind="stable")
+    x = x[order]
+    values = {series: column[order] for series, column in values.items()}
+    assert info.domain_start is not None and info.domain_end is not None
+    lattice = PixelLattice(XRange(info.domain_start, info.domain_end), tile_size_px=1)
+
+    for level in range(info.max_level + 1):
+        grid = lattice.level_grid(level)
+        index = np.clip(grid.index_of(x), 0, grid.bucket_count - 1)
+        directory = level_dir(storage_dir, level)
+        buckets, rows_per_bucket = np.unique(index, return_counts=True)
+        row_count = np.load(directory / f"{_ROW_COUNT}.npy", mmap_mode="r+")
+        row_count[buckets] += rows_per_bucket
+        row_count.flush()
+        for series in info.columns:
+            target = BucketStats(
+                **{
+                    field: np.load(directory / f"{stat_column(series, field)}.npy", mmap_mode="r+")
+                    for field in _STAT_FIELDS
+                }
+            )
+            ids, part = aggregate_sorted(x, values[series], index)
+            merge_into(target, ids, part)
+            for field in _STAT_FIELDS:
+                getattr(target, field).flush()
+
+    if info.density_max_level is None:
+        return
+    for level in range(info.density_max_level + 1):
+        grid = lattice.level_grid(level)
+        for series, (y_low, y_high) in info.density_y_ranges.items():
+            counts = np.load(density_dir(storage_dir, level) / f"{series}.npy", mmap_mode="r+")
+            _add_density_column_major(
+                counts, grid, y_low, y_high, info.density_rows, x, values[series]
+            )
+            counts.flush()
+
+
+def _add_density_column_major(
+    counts: npt.NDArray[Any],
+    grid: BucketGrid,
+    y_low: float,
+    y_high: float,
+    rows: int,
+    x: npt.NDArray[np.float64],
+    y: npt.NDArray[np.float64],
+) -> None:
+    """열 우선 저장(열마다 rows개 연속)인 밀도 배열에 점을 더한다 (add_points와 같은 경계 규칙)."""
+    scratch = empty_density(grid, y_low, y_high, rows)
+    add_points(scratch, x, y)
+    touched = np.flatnonzero(scratch.counts.T.reshape(-1))
+    counts[touched] += scratch.counts.T.reshape(-1)[touched]
+
+
+def grow_storage(old_dir: Path, new_dir: Path, info: PyramidInfo, toward_end: bool) -> PyramidInfo:
+    """격자 범위를 2배로 넓힌 피라미드를 new_dir에 만든다 (old_dir은 그대로 둔다).
+
+    범위를 [s, s + 2W)(toward_end) 또는 [s - W, s + W)로 넓히면, 새 레벨 L의 절반은 이전 레벨
+    L-1과 버킷 경계가 정확히 같다. 그래서 다시 집계하지 않고 이전 레벨을 옮겨 붙이기만 한다.
+    레벨 0은 전체를 담은 버킷 하나라 그대로다. 최상세 레벨 번호는 유지하므로 가장 세밀한
+    해상도가 절반이 되고, 그보다 깊은 줌은 원본을 읽는다.
+    """
+    assert info.domain_start is not None and info.domain_end is not None
+    width = info.domain_end - info.domain_start
+    start = info.domain_start if toward_end else info.domain_start - width
+    columns = [_ROW_COUNT, *(stat_column(s, f) for s in info.columns for f in _STAT_FIELDS)]
+
+    for level in range(info.max_level + 1):
+        source = level_dir(old_dir, max(level - 1, 0))
+        arrays = {}
+        for name in columns:
+            old = np.load(source / f"{name}.npy", mmap_mode="r")
+            if level == 0:
+                arrays[name] = np.array(old)
+            else:
+                filler = _empty_like_column(name, len(old))
+                arrays[name] = np.concatenate([old, filler] if toward_end else [filler, old])
+        _write_arrays(level_dir(new_dir, level), arrays)
+
+    if info.density_max_level is not None:
+        for level in range(info.density_max_level + 1):
+            source = density_dir(old_dir, max(level - 1, 0))
+            arrays = {}
+            for series in info.density_y_ranges:
+                old = np.load(source / f"{series}.npy", mmap_mode="r")
+                if level == 0:
+                    arrays[series] = np.array(old)
+                else:
+                    zeros = np.zeros_like(old)
+                    arrays[series] = np.concatenate([old, zeros] if toward_end else [zeros, old])
+            _write_arrays(density_dir(new_dir, level), arrays)
+
+    return info.model_copy(
+        update={"storage": new_dir.name, "domain_start": start, "domain_end": start + 2 * width}
+    )
+
+
+def _empty_like_column(name: str, length: int) -> npt.NDArray[Any]:
+    """빈 버킷 length개의 컬럼 값 (BucketStats.empty와 같은 규칙)."""
+    if name == _ROW_COUNT:
+        return np.zeros(length, dtype=np.int64)
+    field = name.rsplit(":", 1)[1]
+    empty: npt.NDArray[Any] = getattr(BucketStats.empty(length), field)
+    return empty

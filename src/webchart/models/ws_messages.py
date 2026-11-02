@@ -87,6 +87,7 @@ class FrameBegin(BaseModel):
     zoom: int
     dpr: int
     tile_size_px: int  # 장치 픽셀 (= 설정 tile_size × dpr)
+    domain: tuple[float, float]  # 타일 격자의 x 전체 범위. 실시간 추가로 넓어질 수 있다
     x_range: tuple[float, float]
     tiles: list[TileRef]
     y_ranges: dict[str, tuple[float, float]]
@@ -135,6 +136,19 @@ class RangeStats(BaseModel):
     exact: bool
     source: str
     series: dict[str, SeriesStats]
+
+
+class DataAppendedMessage(BaseModel):
+    """데이터가 추가되었다. x_range와 겹치는 화면이면 viewport를 다시 보내면 된다.
+
+    바뀌지 않은 타일은 서버 캐시 키가 그대로라 다시 보내도 캐시에서 바로 나온다.
+    x_range가 None이면 전체가 바뀐 것이다. domain은 새 격자 범위다.
+    """
+
+    type: Literal["data_appended"] = "data_appended"
+    generation: int
+    x_range: tuple[float, float] | None
+    domain: tuple[float, float]
 
 
 class Pong(BaseModel):

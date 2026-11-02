@@ -37,6 +37,9 @@ TOLERANCE_PX = 1
 # dpr이 2배면 선의 픽셀 굵기도 2배라 허용 열 수도 dpr배로 늘린다.
 STROKE_REACH_PX = 1
 
+# 정답 그림 양옆 여백 (dpr 1 기준 px). render_reference_strip 설명 참고.
+REFERENCE_MARGIN_PX = 4
+
 # 허용하는 어긋난 열 수. 무왜곡 계약이므로 0이다.
 MAX_MISMATCHED_COLUMNS = 0
 
@@ -104,10 +107,22 @@ def render_reference_strip(
 
     집계 없이 모든 행을 그리고, y축은 matplotlib 자동 스케일에 맡긴다(구간 밖 행 포함 전체
     데이터 기준). 파이프라인 코드(집계, y범위 정책)를 거치지 않아야 정답으로서 독립적이다.
+
+    구간 양옆으로 몇 px 더 넓게 그린 뒤 잘라 낸다. 정답은 "끝없이 이어 그린 그림의 이 구간"
+    이어야 하는데, 구간 끝에서 바로 자르면 정답 쪽 가장자리에만 선이 잘린 흔적이 남는다.
+    (자르기는 픽셀을 옮기지 않으므로 집계가 아니다.)
     """
+    margin_px = REFERENCE_MARGIN_PX * dpr
+    margin = x_range.width / width_px * margin_px
     with matplotlib.rc_context({"path.simplify": False}):
         png = MatplotlibRenderer().render_raster(
-            raw_drawings(spec, frame), x_range, None, width_px, height_px, dpr=dpr
+            raw_drawings(spec, frame),
+            XRange(x_range.start - margin, x_range.end + margin),
+            None,
+            width_px,
+            height_px,
+            dpr=dpr,
+            overdraw_px=margin_px,
         )
     return decode_png(png)
 
@@ -152,6 +167,13 @@ async def diff_tiles_against_reference(
         frame, spec, XRange(first.origin, last.end), size_px * len(tiles), size_px, dpr
     )
     actual = await render_pipeline_strip(meta, spec, zoom, tiles, dpr)
+    reach = STROKE_REACH_PX * dpr
+    # 열 비교는 양옆 reach 열을 함께 본다. 데이터 중간을 자른 띠(일부 타일만 비교)는 띠
+    # 바깥 열이 그림에 없어, 바깥의 피크가 띠 첫 열로 번진 잉크를 설명할 수 없다.
+    # 그래서 데이터 중간에서 잘린 끝은 reach 열만큼 빼고 비교한다 (전체 범위 띠는 그대로).
+    left = reach if tiles[0] > 0 else 0
+    right = reach if tiles[-1] < lattice.tile_count(zoom) - 1 else 0
+    columns = slice(left, expected.shape[1] - right)
     return compare_envelopes(
-        ink_mask(expected), ink_mask(actual), TOLERANCE_PX, STROKE_REACH_PX * dpr
+        ink_mask(expected)[:, columns], ink_mask(actual)[:, columns], TOLERANCE_PX, reach
     )

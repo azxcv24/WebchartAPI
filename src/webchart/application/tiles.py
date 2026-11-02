@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Protocol
 
+from webchart.application.append import tile_epoch
 from webchart.application.density import fetch_tile_density
 from webchart.application.layers import LayerDrawing, project_layers
 from webchart.application.windows import (
@@ -46,6 +47,11 @@ logger = logging.getLogger("webchart.application.tiles")
 # 프리페치: 보이는 타일 좌우로 미리 그려 둘 타일 수
 PREFETCH_RADIUS = 2
 
+# 타일 덧그리기 여백 (dpr 1 기준 px). 타일마다 따로 그리면 타일 경계에서 선이 잘려,
+# 경계 근처의 가파른 선분은 이어 그린 그림과 안티앨리어싱·이음새 모양이 달라진다. 양옆으로
+# 이만큼 더 넓게(같은 레벨 격자로) 그린 뒤 잘라 내면 경계가 그림 안쪽이 되어 같아진다.
+TILE_OVERDRAW_PX = 4
+
 # 보이는 타일이 없을 때(뷰포트가 데이터 밖) VIEWPORT y범위를 구하는 격자 폭
 VIEWPORT_PROBE_BUCKETS = 512
 
@@ -65,12 +71,23 @@ class TileRequest:
     def size_px(self) -> int:
         return self.lattice.tile_size_px * self.dpr
 
+    @property
+    def overdraw_px(self) -> int:
+        """타일 양옆 덧그리기 여백 (장치 px = 버킷 수)."""
+        return TILE_OVERDRAW_PX * self.dpr
+
     def cache_key(self) -> str:
-        """`tile:{dataset}:{data_version}:{그림 해시}:{z}-{i}@{dpr}x`"""
+        """`tile:{dataset}:{data_version}:{그림 해시}:{z}-{i}@{dpr}x:e{세대}`
+
+        그림 해시에는 격자 범위가, 마지막 칸에는 이 타일 구간을 바꾼 마지막 실시간 추가의
+        세대가 들어간다. 추가가 닿지 않은 타일은 키가 그대로라 캐시를 계속 쓴다.
+        """
+        x_range = self.lattice.tile_range(self.tile)
+        epoch = tile_epoch(self.meta, self.spec.x_axis.column, x_range)
         return (
             f"tile:{self.meta.dataset_id}:{self.meta.data_version or 'v0'}:"
-            f"{render_hash(self.spec, self.y_ranges, self.lattice.tile_size_px)}:"
-            f"{self.tile.zoom}-{self.tile.index}@{self.dpr}x"
+            f"{render_hash(self.spec, self.y_ranges, self.lattice)}:"
+            f"{self.tile.zoom}-{self.tile.index}@{self.dpr}x:e{epoch}"
         )
 
 
@@ -102,11 +119,13 @@ def tile_drawings(request: TileRequest) -> TileDrawings:
     exact: list[bool] = []
     sources: list[str] = []
 
-    windows = None
+    padding = request.overdraw_px
+    windows = fill_windows = None
     if bucket_columns:
         windows = fetch_tile_windows(
-            meta, x_column, bucket_columns, request.lattice, request.tile, request.dpr
+            meta, x_column, bucket_columns, request.lattice, request.tile, request.dpr, padding
         )
+        fill_windows = windows.cropped(padding, request.size_px)
         exact.append(windows.is_exact)
         sources.append(windows.source)
 
@@ -126,7 +145,7 @@ def tile_drawings(request: TileRequest) -> TileDrawings:
             exact.append(result.is_exact)
             sources.append(result.source)
 
-    drawings = project_layers(spec, windows, densities, request.dpr)
+    drawings = project_layers(spec, windows, densities, request.dpr, fill_windows)
     return TileDrawings(drawings, all(exact), "+".join(dict.fromkeys(sources)))
 
 
@@ -140,15 +159,17 @@ class PipelineTileRenderer:
     def _render_sync(request: TileRequest) -> RenderedTile:
         drawn = tile_drawings(request)
         grid = request.lattice.tile_grid(request.tile, request.dpr)
+        margin = request.overdraw_px * grid.bucket_width
         image = paint(
             paint_raster,
             paint_items(drawn.drawings),
-            grid.x_range,
+            XRange(grid.origin - margin, grid.end + margin),
             request.y_ranges,
             request.size_px,
             request.size_px,
             request.dpr,
             request.spec.background_color,
+            request.overdraw_px,
         )
         return RenderedTile(request.tile, request.dpr, image, drawn.is_exact, drawn.source)
 
@@ -287,13 +308,14 @@ def bucket_layer_columns(spec: ChartSpec) -> list[str]:
 _TILE_FIELDS = {"layers", "background_color"}
 
 
-def render_hash(spec: ChartSpec, y_ranges: dict[AxisName, YRange], tile_size_px: int) -> str:
-    """타일 그림을 결정하는 값들의 해시 (16자)."""
+def render_hash(spec: ChartSpec, y_ranges: dict[AxisName, YRange], lattice: PixelLattice) -> str:
+    """타일 그림을 결정하는 값들의 해시 (16자): 레이어, 축별 y범위, 격자(범위·타일 크기)."""
     payload = spec.model_dump(mode="json", include=_TILE_FIELDS)
     payload["x_column"] = spec.x_axis.column
     payload["y_ranges"] = {
         name: [repr(r.low), repr(r.high)] for name, r in sorted(y_ranges.items())
     }
-    payload["tile_size_px"] = tile_size_px
+    domain = lattice.domain
+    payload["lattice"] = [repr(domain.start), repr(domain.end), lattice.tile_size_px]
     canonical = json.dumps(payload, sort_keys=True)
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]

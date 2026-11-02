@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from webchart.config import settings
+from webchart.domain.bucket_stats import BucketStats
 from webchart.domain.geometry import BucketGrid, PixelLattice, TileAddress, XRange
 from webchart.domain.projection import SeriesWindow
 from webchart.infrastructure.pyramid_store import PyramidReader
@@ -44,6 +45,19 @@ class WindowSet:
     is_exact: bool
     source: str
 
+    def cropped(self, first: int, count: int) -> "WindowSet":
+        """격자의 버킷 [first, first + count)만 남긴 창 (이웃 없음). 덧그리기 여백을 뺄 때 쓴다."""
+        windows = {
+            name: SeriesWindow(
+                grid=window.grid.sub_grid(first, count),
+                stats=window.stats.take(slice(first, first + count)),
+                lead=BucketStats.empty(0),
+                trail=BucketStats.empty(0),
+            )
+            for name, window in self.windows.items()
+        }
+        return WindowSet(windows, self.is_exact, self.source)
+
     def y_bounds(self) -> tuple[float, float] | None:
         """격자 안(이웃 제외) 모든 시리즈의 y 최솟값·최댓값."""
         bounds = [b for w in self.windows.values() if (b := w.stats.y_bounds()) is not None]
@@ -53,10 +67,14 @@ class WindowSet:
 
 
 def lattice_for(meta: DatasetMeta, x_column: str, tile_size_px: int) -> PixelLattice:
-    """데이터셋 x 컬럼의 전체 범위(정규 좌표)로 타일 격자를 만든다.
+    """데이터셋 x 컬럼의 타일 격자.
 
-    통계가 없으면 [0, 1)로 대체한다 (타일 위치가 데이터와 맞지 않으므로 경고).
+    고정된 범위(meta.x_domains, 피라미드 빌드·실시간 추가 때 정해진다)가 있으면 그것을,
+    없으면 컬럼 통계(정규 좌표 최솟값·최댓값)를 쓴다. 통계도 없으면 [0, 1)로 대체한다
+    (타일 위치가 데이터와 맞지 않으므로 경고).
     """
+    if x_column in meta.x_domains:
+        return PixelLattice(XRange(*meta.x_domains[x_column]), tile_size_px)
     column = next((c for c in meta.columns if c.name == x_column), None)
     if column is not None and column.min_numeric is not None and column.max_numeric is not None:
         return PixelLattice.from_data_bounds(column.min_numeric, column.max_numeric, tile_size_px)
@@ -94,9 +112,19 @@ def fetch_tile_windows(
     lattice: PixelLattice,
     tile: TileAddress,
     dpr: int,
+    padding: int = 0,
 ) -> WindowSet:
-    """타일 하나의 창. 타일 격자는 피라미드 레벨 격자의 일부라 어느 경로든 정확하다."""
-    grid = lattice.tile_grid(tile, dpr)
+    """타일 하나의 창. 타일 격자는 피라미드 레벨 격자의 일부라 어느 경로든 정확하다.
+
+    padding > 0이면 타일 양옆으로 버킷 padding개씩 더 넓은 격자를 쓴다 (덧그리기 여백).
+    여백도 같은 레벨 격자라 정확하다.
+    """
+    tile_grid = lattice.tile_grid(tile, dpr)
+    grid = BucketGrid(
+        tile_grid.origin - padding * tile_grid.bucket_width,
+        tile_grid.bucket_width,
+        tile_grid.bucket_count + 2 * padding,
+    )
     level_number = lattice.tile_level(tile.zoom, dpr)
     reader = usable_pyramid(meta, x_column, y_columns)
     if (
@@ -105,7 +133,7 @@ def fetch_tile_windows(
         and reader.lattice.domain == lattice.domain
     ):
         level = reader.level(level_number)
-        first = tile.index * grid.bucket_count
+        first = tile.index * tile_grid.bucket_count - padding
         windows = {s: reader.window(level, s, first, grid.bucket_count) for s in y_columns}
         return WindowSet(windows, is_exact=True, source=f"pyramid:L{level_number}")
     return _raw_windows(meta, x_column, y_columns, grid)
