@@ -91,9 +91,20 @@ class PyramidInfo(BaseModel):
 
 
 class DatasetMeta(BaseModel):
+    """데이터셋 메타데이터 (datasets/{id}/meta.json).
+
+    - `data_version`: 인제스트할 때마다 새로 발급하는 식별자. 모든 캐시 키와 피라미드에
+      들어가므로, 같은 ID로 다시 인제스트하면 이전 캐시·피라미드가 자연히 무효가 된다.
+      이전 형식의 meta.json은 빈 문자열이다.
+    - `sort_column`: 원본이 이 컬럼 오름차순으로 저장되어 있다 (계획 문서 2.7).
+      None이면 정렬되지 않은 원본이다 (범위 읽기가 느리지만 결과는 같다).
+    """
+
     dataset_id: str
     name: str
     status: DatasetStatus = DatasetStatus.UPLOADING
+    data_version: str = ""
+    sort_column: str | None = None
     row_count: int = 0
     size_bytes: int = 0
     columns: list[ColumnInfo] = Field(default_factory=list)

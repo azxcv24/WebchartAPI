@@ -1,7 +1,8 @@
-"""문자열로 들어온 시간 컬럼을 감지해 timestamp로 바꾼다.
+"""문자열·날짜로 들어온 시간 컬럼을 감지해 timestamp로 바꾼다.
 
 CSV·TSV·JSON은 시간 값을 문자열로 담는다. 문자열로 저장하면 x축 범위를 계산할 수
-없으므로(D3) 인제스트 단계에서 timestamp로 바꾼다.
+없으므로(D3) 인제스트 단계에서 timestamp로 바꾼다. 날짜 전용 값(date32, datetime.date)도
+자정 시각의 timestamp로 바꿔, 이후 단계가 시간 타입 하나만 다루게 한다.
 
 감지 규칙: 표본의 비결측 값이 **모두** ISO 8601로 파싱되는 문자열 컬럼만 시간 컬럼으로
 본다. 일부만 파싱되는 컬럼은 범주형 문자열일 가능성이 높아 건드리지 않는다.
@@ -11,6 +12,7 @@ CSV·TSV·JSON은 시간 값을 문자열로 담는다. 문자열로 저장하�
 - 오프셋이 있는 값은 UTC timestamp로 저장한다. 오프셋이 섞여 있어도 UTC로 통일된다.
 """
 
+import datetime as dt
 import logging
 import warnings
 from dataclasses import dataclass
@@ -28,14 +30,20 @@ SAMPLE_ROWS = 1000
 class TimeColumn:
     name: str
     is_tz_aware: bool
+    is_text: bool = True  # False면 날짜 값(date)이라 ISO 8601 파싱 형식을 쓰지 않는다
 
 
 def detect_time_columns(sample: pd.DataFrame) -> list[TimeColumn]:
-    """표본에서 ISO 8601 시간 문자열 컬럼을 찾는다."""
+    """표본에서 ISO 8601 시간 문자열 컬럼과 날짜 전용 컬럼을 찾는다."""
     detected: list[TimeColumn] = []
     for name in sample.columns:
         values = sample[name].dropna()
-        if values.empty or not _is_string_column(values):
+        if values.empty:
+            continue
+        if _is_date_column(values):
+            detected.append(TimeColumn(str(name), is_tz_aware=False, is_text=False))
+            continue
+        if not _is_string_column(values):
             continue
         parsed = _parse_iso8601(values)
         if parsed is not None:
@@ -51,10 +59,29 @@ def parse_time_columns(ddf: dd.DataFrame, columns: list[TimeColumn]) -> dd.DataF
     """
     for column in columns:
         ddf[column.name] = dd.to_datetime(
-            ddf[column.name], format="ISO8601", utc=column.is_tz_aware, errors="coerce"
+            ddf[column.name],
+            format="ISO8601" if column.is_text else None,
+            utc=column.is_tz_aware,
+            errors="coerce",
         )
         logger.info(f"시간 컬럼으로 변환: {column.name} (tz-aware={column.is_tz_aware})")
     return ddf
+
+
+def _is_date_column(values: pd.Series) -> bool:
+    """날짜 전용 값(시각 없음)인지: Arrow date 타입이거나 datetime.date 객체."""
+    dtype = values.dtype
+    if isinstance(dtype, pd.ArrowDtype):
+        import pyarrow as pa
+
+        return bool(pa.types.is_date(dtype.pyarrow_dtype))
+    if not pd.api.types.is_object_dtype(dtype):
+        return False
+    return bool(
+        values.map(
+            lambda value: isinstance(value, dt.date) and not isinstance(value, dt.datetime)
+        ).all()
+    )
 
 
 def _is_string_column(values: pd.Series) -> bool:

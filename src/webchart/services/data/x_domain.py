@@ -12,14 +12,14 @@
   - float64라서 2026년 기준 해상도는 약 256ns다. 픽셀 폭보다 훨씬 작아 렌더 좌표로는
     충분하다. 정확한 원래 값이 필요한 곳(호버 등)은 원본 행의 값을 다시 읽는다.
 
-알려진 한계: date32 같은 날짜 전용 컬럼은 pandas에서 object로 읽히면 범위 필터가
-동작하지 않을 수 있다. 인제스트에서 timestamp로 바꾸는 작업은 Phase 1.2에서 한다.
+날짜 전용 컬럼(date32 등)도 자정 시각의 timestamp로 보고 같은 규칙을 적용한다.
 """
 
 import datetime as dt
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 import pyarrow as pa
 
@@ -60,6 +60,32 @@ def to_canonical(values: pd.Series) -> np.ndarray:
     if _holds_dates(values):
         return to_canonical(pd.to_datetime(values))
     raise TypeError(f"컬럼 '{values.name}'({values.dtype})은 x축으로 쓸 수 없다")
+
+
+def canonical_from_arrow(values: pa.Array | pa.ChunkedArray) -> npt.NDArray[np.float64]:
+    """Arrow 컬럼 → 정규 좌표 float64 배열. 결측(null, NaN)은 NaN이 된다.
+
+    원본 저장소(RawStore)가 pandas를 거치지 않고 바로 숫자 배열을 얻기 위해 쓴다.
+    """
+    arrow_type = values.type
+    if pa.types.is_timestamp(arrow_type) or pa.types.is_date(arrow_type):
+        values = values.cast(pa.timestamp("ns")) if pa.types.is_date(arrow_type) else values
+        nanoseconds = values.cast(pa.timestamp("ns", tz=getattr(values.type, "tz", None)))
+        return _to_float_numpy(nanoseconds.cast(pa.int64()))
+    if pa.types.is_integer(arrow_type) or pa.types.is_floating(arrow_type):
+        return _to_float_numpy(values)
+    if pa.types.is_decimal(arrow_type):
+        return _to_float_numpy(values)
+    raise TypeError(f"Arrow 타입 {arrow_type}은 수치 좌표로 바꿀 수 없다")
+
+
+def _to_float_numpy(values: pa.Array | pa.ChunkedArray) -> npt.NDArray[np.float64]:
+    # epoch 나노초는 2^53을 넘으므로 정밀도 손실을 허용한다 (해상도 약 256ns, 모듈 설명 참고)
+    floats = values.cast(pa.float64(), safe=False)
+    if isinstance(floats, pa.ChunkedArray):
+        floats = floats.combine_chunks() if floats.num_chunks else pa.array([], pa.float64())
+    result: npt.NDArray[np.float64] = floats.to_numpy(zero_copy_only=False)
+    return result
 
 
 def to_native_bound(x: float, column: ColumnInfo | None) -> Any:

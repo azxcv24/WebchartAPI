@@ -1,4 +1,8 @@
-"""Unified data access layer using Dask for out-of-core processing."""
+"""데이터셋 접근: 메타데이터 저장소와 원본 범위 읽기의 진입점.
+
+범위 읽기는 infrastructure/raw_store.py(zone map + pyarrow)로, 전체를 훑는 작업
+(미리보기 등)은 Dask로 한다.
+"""
 
 import logging
 from pathlib import Path
@@ -7,9 +11,10 @@ import dask.dataframe as dd
 import pandas as pd
 
 from webchart.config import settings
-from webchart.core.errors import DatasetNotFoundError, QueryTooLargeError
-from webchart.models.dataset import ColumnInfo, DatasetMeta
-from webchart.services.data.x_domain import to_native_bound
+from webchart.core.errors import DatasetNotFoundError
+from webchart.domain.geometry import XRange
+from webchart.infrastructure.raw_store import RawStore, forget_dataset, raw_store_for
+from webchart.models.dataset import DatasetMeta
 
 logger = logging.getLogger("webchart.data.access")
 
@@ -34,6 +39,11 @@ def read_full(dataset_id: str) -> dd.DataFrame:
     return dd.read_parquet(data_dir)
 
 
+def raw_store(meta: DatasetMeta) -> RawStore:
+    """데이터셋의 원본 저장소 (data_version별로 재사용된다)."""
+    return raw_store_for(_dataset_dir(meta.dataset_id) / "data", meta.dataset_id, meta.data_version)
+
+
 def read_window(
     dataset_id: str,
     x_column: str,
@@ -44,51 +54,28 @@ def read_window(
 ) -> pd.DataFrame:
     """x 범위에 속한 행을 읽어 x 오름차순 pandas DataFrame으로 반환한다.
 
+    겹치는 로우그룹만 읽는다 (infrastructure/raw_store.py). x가 결측인 행은 빠진다.
+
     Args:
         dataset_id: 데이터셋 ID
         x_column: 범위 필터를 걸 컬럼 (보통 x축)
-        x_range: 정규 좌표(x_domain.py)로 표현한 [low, high] 닫힌 범위. 시간 컬럼이면
-            epoch 나노초이며, 여기서 컬럼의 원래 타입으로 바꿔 비교한다.
+        x_range: 정규 좌표(x_domain.py)로 표현한 반열린 범위 `[start, end)`. 시간 컬럼이면
+            epoch 나노초다. None이면 전체.
         columns: 읽을 컬럼 (None이면 전체)
         max_rows: 결과 행 수 상한. 기본값은 settings.max_query_rows이며 넘으면
             QueryTooLargeError를 던진다.
-        meta: 이미 읽어 둔 메타데이터. 없으면 x 범위 변환에 필요할 때 읽는다.
+        meta: 이미 읽어 둔 메타데이터
     """
-    ddf = read_full(dataset_id)
-
-    # Select columns
-    if columns:
-        # Always include x_column for filtering
-        cols = list(set([x_column] + columns))
-        cols = [c for c in cols if c in ddf.columns]
-        ddf = ddf[cols]
-
-    if x_range is not None:
-        column = _column_info(meta or get_dataset_meta(dataset_id), x_column)
-        low, high = (to_native_bound(bound, column) for bound in x_range)
-        ddf = ddf[(ddf[x_column] >= low) & (ddf[x_column] <= high)]
-
-    cap = max_rows if max_rows is not None else settings.max_query_rows
-
-    # Cheap pre-check using partition counts before materializing
-    try:
-        approx_count = int(ddf.shape[0].compute())
-    except Exception:
-        approx_count = -1
-    if 0 <= cap < approx_count:
-        raise QueryTooLargeError(approx_count, cap)
-
-    # Sort by x_column and compute
-    result = ddf.compute()
-    if len(result) > cap:
-        raise QueryTooLargeError(len(result), cap)
-    result = result.sort_values(x_column).reset_index(drop=True)
-
-    return result
-
-
-def _column_info(meta: DatasetMeta, name: str) -> ColumnInfo | None:
-    return next((column for column in meta.columns if column.name == name), None)
+    meta = meta or get_dataset_meta(dataset_id)
+    store = raw_store(meta)
+    wanted = columns or [column.name for column in meta.columns]
+    rows = store.read_range(
+        x_column,
+        XRange(*x_range) if x_range is not None else None,
+        wanted,
+        max_rows=max_rows if max_rows is not None else settings.max_query_rows,
+    )
+    return rows.table.to_pandas()
 
 
 def read_sample(dataset_id: str, n: int = 100) -> pd.DataFrame:
@@ -132,4 +119,5 @@ def delete_dataset(dataset_id: str) -> None:
     ds_dir = _dataset_dir(dataset_id)
     if not ds_dir.exists():
         raise DatasetNotFoundError(dataset_id)
+    forget_dataset(dataset_id)
     shutil.rmtree(ds_dir)

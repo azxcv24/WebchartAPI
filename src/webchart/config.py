@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     max_upload_size: int = 10 * 1024 * 1024 * 1024  # 10GB
     max_xlsx_upload_size: int = 200 * 1024 * 1024  # 200MB - xlsx is not chunked
     parquet_partition_size: str = "128MB"
+    # 원본 Parquet 로우그룹 크기(행). 범위 읽기의 최소 단위라 작을수록 깊은 줌 읽기가 싸고,
+    # 클수록 압축·스캔 효율이 좋다. 2^17 = 131,072행.
+    ingest_row_group_rows: int = 131_072
 
     # Query guards
     max_query_rows: int = 5_000_000  # cap on read_window result size
