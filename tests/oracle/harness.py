@@ -14,6 +14,7 @@ from webchart.config import settings
 from webchart.domain.geometry import PixelLattice
 from webchart.models.chart import AxisConfig, ChartSpec, ChartType
 from webchart.models.dataset import DatasetMeta
+from webchart.services.data.x_domain import to_canonical
 from webchart.services.ingest.upload import convert_to_parquet
 from webchart.services.render import tile_renderer
 from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
@@ -96,9 +97,8 @@ def render_reference_strip(
     정답 그림에 섞이면 안 된다.
     """
     x_column = spec.x_axis.column
-    reference = frame.copy()
-    if pd.api.types.is_datetime64_any_dtype(reference[x_column]):
-        reference[x_column] = reference[x_column].astype("int64").astype("float64")
+    # 타일 경로와 같은 정규 좌표로 그린다 (시간축은 epoch 나노초)
+    reference = frame.assign(**{x_column: to_canonical(frame[x_column])})
 
     with matplotlib.rc_context({"path.simplify": False}):
         png = MatplotlibRenderer().render_raster(

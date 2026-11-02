@@ -7,6 +7,8 @@ x 전체 범위를 `PixelLattice`로 2^zoom 등분하고, 뷰포트에 보이는
 import asyncio
 import logging
 
+import pandas as pd
+
 from webchart.cache import redis_cache
 from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
@@ -20,6 +22,7 @@ from webchart.services.data.pyramid import (
     read_pyramid_window,
     usable_pyramid,
 )
+from webchart.services.data.x_domain import to_canonical
 from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
 
 logger = logging.getLogger("webchart.render.tile")
@@ -31,19 +34,16 @@ PREFETCH_RADIUS = 2
 
 
 def lattice_for(meta: DatasetMeta, x_column: str) -> PixelLattice:
-    """데이터셋의 x 컬럼 통계로 타일 격자를 만든다.
+    """데이터셋의 x 컬럼 통계(정규 좌표)로 타일 격자를 만든다.
 
-    통계가 없거나 수치로 바꿀 수 없으면 [0, 1) 격자로 대체한다. 이 경우 타일
-    위치가 실제 데이터와 맞지 않으므로 경고를 남긴다.
+    통계가 없으면 [0, 1) 격자로 대체한다. 이 경우 타일 위치가 실제 데이터와
+    맞지 않으므로 경고를 남긴다.
     """
     column = next((c for c in meta.columns if c.name == x_column), None)
-    if column is not None and column.min_value is not None and column.max_value is not None:
-        try:
-            return PixelLattice.from_data_bounds(
-                float(column.min_value), float(column.max_value), settings.tile_size
-            )
-        except (TypeError, ValueError):
-            pass
+    if column is not None and column.min_numeric is not None and column.max_numeric is not None:
+        return PixelLattice.from_data_bounds(
+            column.min_numeric, column.max_numeric, settings.tile_size
+        )
     logger.warning(
         f"x 컬럼 '{x_column}'의 수치 범위를 알 수 없어 [0, 1) 격자로 대체한다 "
         f"(dataset={meta.dataset_id})"
@@ -61,6 +61,9 @@ def _read_tile_data(
 ):
     """타일 구간의 데이터를 피라미드에서 읽고, 쓸 수 없으면 원본에서 읽는다.
 
+    반환하는 DataFrame의 x 컬럼은 정규 좌표(float64)로 바뀌어 있다. 타일은 축이 없으므로
+    원래 타입(시간 등)이 필요 없고, 격자와 같은 단위여야 x 위치가 맞는다.
+
     렌더 스레드 풀에서 동기로 실행된다. 이 x 컬럼의 피라미드가 없거나, 줌이
     피라미드가 만들어진 해상도보다 깊으면 원본을 읽는다. 깊은 줌은 x 구간이
     좁아서 원본 읽기도 상대적으로 저렴하다는 가정이다 (D6: 현재는 전체 스캔이라
@@ -72,8 +75,13 @@ def _read_tile_data(
         if level is not None:
             df = read_pyramid_window(dataset_id, x_column, level, tile_range.as_tuple(), columns)
             if df is not None:
-                return df
-    return read_window(dataset_id, x_column, tile_range.as_tuple(), columns)
+                return _with_canonical_x(df, x_column)
+    df = read_window(dataset_id, x_column, tile_range.as_tuple(), columns, meta=meta)
+    return _with_canonical_x(df, x_column)
+
+
+def _with_canonical_x(df: pd.DataFrame, x_column: str) -> pd.DataFrame:
+    return df.assign(**{x_column: to_canonical(df[x_column])})
 
 
 async def render_tile(

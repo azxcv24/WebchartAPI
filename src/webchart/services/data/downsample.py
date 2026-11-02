@@ -11,6 +11,8 @@ import logging
 import numpy as np
 import pandas as pd
 
+from webchart.services.data.x_domain import to_canonical
+
 logger = logging.getLogger("webchart.data.downsample")
 
 
@@ -68,7 +70,7 @@ def _lttb(
         idx = list({0, n // 2, n - 1})[:target_points]
         return df.iloc[sorted(idx)].reset_index(drop=True)
 
-    x = df[x_column].to_numpy(dtype=np.float64, copy=False)
+    x = to_canonical(df[x_column])  # 시간 x축도 삼각형 면적을 계산할 수 있게 수치로 바꾼다
     y = df[y_column].to_numpy(dtype=np.float64, copy=False)
 
     bucket_size = (n - 2) / (target_points - 2)

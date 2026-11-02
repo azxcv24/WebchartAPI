@@ -27,17 +27,10 @@ import pandas as pd
 
 from webchart.config import settings
 from webchart.core.errors import DatasetProcessingError
-from webchart.models.dataset import DatasetMeta, PyramidInfo
+from webchart.models.dataset import ColumnKind, DatasetMeta, PyramidInfo
 from webchart.services.data.access import get_dataset_meta, read_full
 
 logger = logging.getLogger("webchart.data.pyramid")
-
-_NUMERIC_DTYPES = {
-    "int8", "int16", "int32", "int64",
-    "uint8", "uint16", "uint32", "uint64",
-    "float16", "float32", "float64", "double",
-}
-
 
 # --- Paths -----------------------------------------------------------------
 
@@ -67,13 +60,9 @@ def usable_pyramid(meta: DatasetMeta, x_column: str) -> PyramidInfo | None:
     if meta.row_count and info.source_row_count and meta.row_count != info.source_row_count:
         return None
     col = next((c for c in meta.columns if c.name == x_column), None)
-    if col is not None and col.min_value is not None and col.max_value is not None:
-        try:
-            cur_min, cur_max = float(col.min_value), float(col.max_value)
-        except (TypeError, ValueError):
-            return None
+    if col is not None and col.min_numeric is not None and col.max_numeric is not None:
         if info.x_min is not None and info.x_max is not None:
-            if cur_min != info.x_min or cur_max != info.x_max:
+            if col.min_numeric != info.x_min or col.max_numeric != info.x_max:
                 return None
     return info
 
@@ -217,11 +206,8 @@ def _choose_max_level(row_count: int, n_series: int = 1) -> int:
 
 def _x_bounds(meta: DatasetMeta, ddf, x_column: str) -> tuple[float, float]:
     info = next((c for c in meta.columns if c.name == x_column), None)
-    if info and info.min_value is not None and info.max_value is not None:
-        try:
-            return float(info.min_value), float(info.max_value)
-        except (TypeError, ValueError):
-            pass
+    if info and info.min_numeric is not None and info.max_numeric is not None:
+        return info.min_numeric, info.max_numeric
     lo, hi = ddf[x_column].min().compute(), ddf[x_column].max().compute()
     return float(lo), float(hi)
 
@@ -245,10 +231,9 @@ def build_pyramid(
     if x_column not in ddf.columns:
         raise DatasetProcessingError(f"x_column '{x_column}' not in dataset")
 
-    numeric = {
-        c.name for c in meta.columns if c.dtype in _NUMERIC_DTYPES
-    }
+    numeric = {c.name for c in meta.columns if c.kind is ColumnKind.NUMERIC}
     if x_column not in numeric:
+        # 시간 x축 피라미드는 Phase 1.3의 피라미드 v2에서 지원한다
         raise DatasetProcessingError(
             f"x_column '{x_column}' must be numeric to build a pyramid"
         )

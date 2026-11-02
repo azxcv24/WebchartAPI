@@ -1,16 +1,21 @@
-"""Handle user interactions: hover, click, data lookup."""
+"""사용자 인터랙션 처리: 호버 위치의 최근접 데이터 점 찾기."""
 
 import logging
 
-import pandas as pd
+import numpy as np
 
 from webchart.core.concurrency import run_in_thread
 from webchart.domain.geometry import ScreenTransform, XRange
+from webchart.models.chart import ChartSpec
 from webchart.models.session import SessionState
 from webchart.models.ws_messages import HoverDataMessage
-from webchart.services.data.access import read_window
+from webchart.services.data.access import get_dataset_meta, read_window
+from webchart.services.data.x_domain import format_x, to_canonical
 
 logger = logging.getLogger("webchart.session.interaction")
+
+# 호버 지점 좌우로 원본을 읽을 폭 (뷰포트 x 폭 대비 비율)
+HOVER_SEARCH_RATIO = 0.01
 
 
 def _screen_transform_of(state: SessionState) -> ScreenTransform | None:
@@ -33,78 +38,60 @@ def _screen_transform_of(state: SessionState) -> ScreenTransform | None:
         return None
 
 
+def _y_columns_of(spec: ChartSpec) -> list[str]:
+    if spec.series:
+        return [series.column for series in spec.series]
+    if spec.y_columns:
+        return spec.y_columns
+    if spec.y_axis:
+        return [spec.y_axis.column]
+    return []
+
+
 async def resolve_hover(
     state: SessionState,
     pixel_x: float,
     pixel_y: float,
 ) -> HoverDataMessage | None:
-    """Resolve a hover event to the nearest data point."""
+    """호버 픽셀 위치에서 x가 가장 가까운 **원본** 데이터 점을 찾는다.
+
+    값은 집계 결과가 아니라 원본 행에서 읽는다 (계획 문서 P4). 지금은 첫 시리즈만
+    반환한다 (D8, Phase 3.2에서 모든 시리즈로 확장). 찾지 못하면 None.
+    """
     transform = _screen_transform_of(state)
-    if transform is None:
-        return None
-    data_x, _ = transform.to_data(pixel_x, pixel_y)
-
-    spec = state.chart_config
-    x_col = spec.x_axis.column
-
-    # Get y columns
-    y_columns = []
-    if spec.series:
-        y_columns = [s.column for s in spec.series]
-    elif spec.y_columns:
-        y_columns = spec.y_columns
-    elif spec.y_axis:
-        y_columns = [spec.y_axis.column]
-
-    if not y_columns:
+    y_columns = _y_columns_of(state.chart_config)
+    if transform is None or not y_columns:
         return None
 
+    hover_x, _ = transform.to_data(pixel_x, pixel_y)
+    x_column = state.chart_config.x_axis.column
     primary_y = y_columns[0]
-
-    # Read a small window around the hover point
-    margin = transform.x_view.width * 0.01  # 뷰포트 폭의 1%
-    window = (data_x - margin, data_x + margin)
+    margin = transform.x_view.width * HOVER_SEARCH_RATIO
 
     try:
-        data = await run_in_thread(
-            read_window, state.dataset_id, x_col, window, [x_col, primary_y]
+        meta = get_dataset_meta(state.dataset_id)
+        rows = await run_in_thread(
+            read_window,
+            state.dataset_id,
+            x_column,
+            (hover_x - margin, hover_x + margin),
+            [x_column, primary_y],
+            meta=meta,
         )
-    except Exception:
+    except Exception as error:
+        logger.debug(f"호버 데이터 읽기 실패: {error}")
         return None
 
-    if data.empty:
+    x_values = to_canonical(rows[x_column]) if not rows.empty else np.empty(0)
+    if np.isnan(x_values).all():  # 빈 결과이거나 x가 모두 결측
         return None
-
-    # Find nearest point by x distance. data_x is in the x column's native
-    # units (read_window filtered the column against it directly).
-    try:
-        x_numeric = data[x_col].astype(float)
-    except (TypeError, ValueError):
-        # Non-numeric x (e.g. timestamp): compare in epoch-ns space. NaT/NaN
-        # become NaN and are dropped so they cannot win idxmin.
-        x_numeric = pd.to_datetime(data[x_col], errors="coerce").astype("int64", copy=False)
-        x_numeric = x_numeric.where(data[x_col].notna())
-
-    distances = (x_numeric - data_x).abs().dropna()
-    if distances.empty:
-        return None
-    nearest_idx = distances.idxmin()
-    nearest_row = data.loc[nearest_idx]
-
-    raw_x = nearest_row[x_col]
-    try:
-        label_x = f"{float(raw_x):.4g}"
-    except (TypeError, ValueError):
-        label_x = str(raw_x)
-
-    try:
-        data_x_out = float(raw_x)
-    except (TypeError, ValueError):
-        data_x_out = float(x_numeric.loc[nearest_idx])
+    nearest = int(np.nanargmin(np.abs(x_values - hover_x)))
+    nearest_x = float(x_values[nearest])
+    x_info = next((c for c in meta.columns if c.name == x_column), None)
 
     return HoverDataMessage(
-        data_x=data_x_out,
-        data_y=float(nearest_row[primary_y]),
+        data_x=nearest_x,
+        data_y=float(rows[primary_y].iloc[nearest]),
         series=primary_y,
-        label=f"{x_col}={label_x}",
+        label=f"{x_column}={format_x(nearest_x, x_info)}",
     )

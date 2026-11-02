@@ -1,17 +1,21 @@
-"""Auto-detect column types and statistics from Parquet datasets."""
+"""Parquet 메타데이터에서 컬럼 타입·분류·통계를 읽는다 (데이터 본문은 읽지 않는다)."""
 
 import logging
 from pathlib import Path
+from typing import Any
 
+import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 
-from webchart.models.dataset import ColumnInfo
+from webchart.models.dataset import ColumnInfo, ColumnKind
+from webchart.services.data.x_domain import canonical_scalar, column_kind_of
 
 logger = logging.getLogger("webchart.ingest.schema_detect")
 
 
 def detect_schema(parquet_dir: Path) -> list[ColumnInfo]:
-    """Read Parquet metadata to extract column info without loading data."""
+    """데이터셋의 모든 컬럼에 대해 ColumnInfo를 만든다."""
     pf = pq.ParquetDataset(parquet_dir)
     schema = pf.schema
 
@@ -24,10 +28,12 @@ def detect_schema(parquet_dir: Path) -> list[ColumnInfo]:
         col_info = ColumnInfo(
             name=field.name,
             dtype=dtype_str,
+            kind=column_kind_of(field.type),
             nullable=field.nullable,
+            timezone=field.type.tz if pa.types.is_timestamp(field.type) else None,
         )
 
-        # Try to get statistics from row groups
+        # 로우그룹 통계가 없거나 읽을 수 없는 컬럼은 통계 없이 둔다
         try:
             _fill_statistics(col_info, parquet_dir, field.name)
         except Exception:
@@ -39,7 +45,7 @@ def detect_schema(parquet_dir: Path) -> list[ColumnInfo]:
 
 
 def _fill_statistics(col_info: ColumnInfo, parquet_dir: Path, col_name: str) -> None:
-    """Extract min/max/null_count from Parquet row group metadata."""
+    """로우그룹 통계를 모아 min/max/null_count를 채운다."""
     parquet_files = list(parquet_dir.glob("*.parquet"))
     if not parquet_files:
         return
@@ -70,10 +76,22 @@ def _fill_statistics(col_info: ColumnInfo, parquet_dir: Path, col_name: str) -> 
                         global_max = stats.max
 
     col_info.null_count = total_nulls
-    if global_min is not None:
-        col_info.min_value = global_min
-    if global_max is not None:
-        col_info.max_value = global_max
+    _assign_bounds(col_info, global_min, global_max)
+
+
+def _assign_bounds(col_info: ColumnInfo, low: Any, high: Any) -> None:
+    """원시 통계값을 표시값(min_value)과 정규 좌표(min_numeric)로 나눠 기록한다."""
+    if low is None or high is None:
+        return
+    if col_info.kind is ColumnKind.NUMERIC:
+        col_info.min_value, col_info.max_value = float(low), float(high)
+    elif col_info.kind is ColumnKind.TIME:
+        col_info.min_value = pd.Timestamp(low).isoformat()
+        col_info.max_value = pd.Timestamp(high).isoformat()
+    elif isinstance(low, str) and isinstance(high, str):
+        col_info.min_value, col_info.max_value = low, high
+    col_info.min_numeric = canonical_scalar(low, col_info.kind)
+    col_info.max_numeric = canonical_scalar(high, col_info.kind)
 
 
 def _find_column_index(meta: pq.FileMetaData, col_name: str) -> int | None:

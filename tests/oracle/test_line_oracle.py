@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from webchart.models.dataset import ColumnKind
 from webchart.services.data.pyramid import build_pyramid
 from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
 from webchart.testing.raster import compare_envelopes, decode_png, ink_mask
@@ -38,6 +39,31 @@ async def test_harness_matches_reference_without_downsampling():
     frame = generate(SMALL)
     meta = ingest(frame, "small")
     spec = line_spec("small", SMALL.y_columns)
+
+    assert_no_distortion(await diff_tiles_against_reference(frame, meta, spec, zoom=0))
+
+
+TIME_SMALL = SyntheticSpec(rows=400, series=2, spikes_per_series=3, time_axis=True, seed=11)
+
+
+@pytest.mark.parametrize(
+    "file_format, timezone",
+    [
+        pytest.param("csv", None, id="csv-naive"),
+        pytest.param("csv", "Asia/Seoul", id="csv-offset"),
+        pytest.param("parquet", None, id="parquet-naive"),
+        pytest.param("parquet", "UTC", id="parquet-utc"),
+    ],
+)
+async def test_time_axis_tiles_match_reference(file_format, timezone):
+    """시간 x축(D3 회귀 방지): 문자열·timestamp 어느 쪽으로 들어와도 원본과 같은 그림."""
+    frame = generate(TIME_SMALL)
+    if timezone is not None:
+        frame[X_COLUMN] = frame[X_COLUMN].dt.tz_localize(timezone)
+    meta = ingest(frame, "time", file_format)
+    x_info = next(c for c in meta.columns if c.name == X_COLUMN)
+    assert x_info.kind is ColumnKind.TIME
+    spec = line_spec("time", TIME_SMALL.y_columns)
 
     assert_no_distortion(await diff_tiles_against_reference(frame, meta, spec, zoom=0))
 

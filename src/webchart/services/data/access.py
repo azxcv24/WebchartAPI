@@ -8,7 +8,8 @@ import pandas as pd
 
 from webchart.config import settings
 from webchart.core.errors import DatasetNotFoundError, QueryTooLargeError
-from webchart.models.dataset import DatasetMeta
+from webchart.models.dataset import ColumnInfo, DatasetMeta
+from webchart.services.data.x_domain import to_native_bound
 
 logger = logging.getLogger("webchart.data.access")
 
@@ -39,16 +40,19 @@ def read_window(
     x_range: tuple[float, float] | None = None,
     columns: list[str] | None = None,
     max_rows: int | None = None,
+    meta: DatasetMeta | None = None,
 ) -> pd.DataFrame:
-    """Read a windowed subset of the dataset, computed eagerly into a Pandas DataFrame.
+    """x 범위에 속한 행을 읽어 x 오름차순 pandas DataFrame으로 반환한다.
 
     Args:
-        dataset_id: Dataset identifier
-        x_column: Column to filter on (typically the x-axis)
-        x_range: (min, max) range filter on x_column
-        columns: Specific columns to read (None = all)
-        max_rows: Hard cap; defaults to settings.max_query_rows. Raises
-            QueryTooLargeError if the filtered result would exceed it.
+        dataset_id: 데이터셋 ID
+        x_column: 범위 필터를 걸 컬럼 (보통 x축)
+        x_range: 정규 좌표(x_domain.py)로 표현한 [low, high] 닫힌 범위. 시간 컬럼이면
+            epoch 나노초이며, 여기서 컬럼의 원래 타입으로 바꿔 비교한다.
+        columns: 읽을 컬럼 (None이면 전체)
+        max_rows: 결과 행 수 상한. 기본값은 settings.max_query_rows이며 넘으면
+            QueryTooLargeError를 던진다.
+        meta: 이미 읽어 둔 메타데이터. 없으면 x 범위 변환에 필요할 때 읽는다.
     """
     ddf = read_full(dataset_id)
 
@@ -59,10 +63,10 @@ def read_window(
         cols = [c for c in cols if c in ddf.columns]
         ddf = ddf[cols]
 
-    # Apply range filter
     if x_range is not None:
-        x_min, x_max = x_range
-        ddf = ddf[(ddf[x_column] >= x_min) & (ddf[x_column] <= x_max)]
+        column = _column_info(meta or get_dataset_meta(dataset_id), x_column)
+        low, high = (to_native_bound(bound, column) for bound in x_range)
+        ddf = ddf[(ddf[x_column] >= low) & (ddf[x_column] <= high)]
 
     cap = max_rows if max_rows is not None else settings.max_query_rows
 
@@ -81,6 +85,10 @@ def read_window(
     result = result.sort_values(x_column).reset_index(drop=True)
 
     return result
+
+
+def _column_info(meta: DatasetMeta, name: str) -> ColumnInfo | None:
+    return next((column for column in meta.columns if column.name == name), None)
 
 
 def read_sample(dataset_id: str, n: int = 100) -> pd.DataFrame:

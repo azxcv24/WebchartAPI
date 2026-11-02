@@ -14,6 +14,11 @@ from webchart.config import settings
 from webchart.core.errors import DatasetProcessingError, UnsupportedFormatError
 from webchart.models.dataset import DatasetMeta, DatasetStatus
 from webchart.services.ingest.schema_detect import detect_schema
+from webchart.services.ingest.time_columns import (
+    SAMPLE_ROWS,
+    detect_time_columns,
+    parse_time_columns,
+)
 
 logger = logging.getLogger("webchart.ingest.upload")
 
@@ -156,6 +161,10 @@ def convert_to_parquet(source_path: Path, dataset_id: str) -> DatasetMeta:
             ddf = dd.from_pandas(df, npartitions=max(1, len(df) // 500_000))
         else:
             raise UnsupportedFormatError(suffix)
+
+        # 문자열로 들어온 시간 컬럼을 timestamp로 바꾼다 (D3)
+        sample = ddf.head(SAMPLE_ROWS, npartitions=1, compute=True)
+        ddf = parse_time_columns(ddf, detect_time_columns(sample))
 
         # Repartition for optimal chunk sizes
         total_size = source_path.stat().st_size

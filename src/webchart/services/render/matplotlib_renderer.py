@@ -27,6 +27,23 @@ def _canvas_for(fig: Figure, fmt: ImageFormat) -> FigureCanvasAgg | FigureCanvas
     return FigureCanvasAgg(fig)
 
 
+def _x_limits_in_axis_units(
+    x_range: tuple[float, float], x_values: "pd.Series | None"
+) -> tuple[object, object]:
+    """요청의 x 범위(정규 좌표)를 matplotlib 축 단위로 바꾼다.
+
+    정적 렌더는 시간 x를 datetime 그대로 그려 날짜 눈금을 얻는다. 이때 축 단위는
+    datetime이므로 epoch 나노초 범위를 Timestamp로 바꿔야 한다.
+    """
+    if x_values is None or not pd.api.types.is_datetime64_any_dtype(x_values):
+        return x_range
+    timezone = x_values.dt.tz
+    low, high = (pd.Timestamp(round(bound), unit="ns") for bound in x_range)
+    if timezone is not None:
+        low, high = low.tz_localize("UTC"), high.tz_localize("UTC")
+    return low, high
+
+
 class MatplotlibRenderer:
     """Renders charts using Matplotlib via the OO API (thread-safe)."""
 
@@ -39,7 +56,7 @@ class MatplotlibRenderer:
         ax.set_facecolor(spec.background_color)
 
         self._draw_chart(ax, spec, data)
-        self._apply_styling(ax, spec)
+        self._apply_styling(ax, spec, data)
 
         buf = io.BytesIO()
         fmt = self._to_mpl_format(spec.format)
@@ -172,7 +189,7 @@ class MatplotlibRenderer:
             logger.warning("Candlestick requires OHLC columns, falling back to line")
             ax.plot(x, y, **kwargs)
 
-    def _apply_styling(self, ax, spec: ChartSpec) -> None:
+    def _apply_styling(self, ax, spec: ChartSpec, data: pd.DataFrame) -> None:
         if spec.title:
             ax.set_title(spec.title)
 
@@ -181,7 +198,7 @@ class MatplotlibRenderer:
             ax.set_ylabel(spec.y_axis.label or spec.y_axis.column)
 
         if spec.x_axis.range:
-            ax.set_xlim(spec.x_axis.range)
+            ax.set_xlim(_x_limits_in_axis_units(spec.x_axis.range, data.get(spec.x_axis.column)))
         if spec.y_axis and spec.y_axis.range:
             ax.set_ylim(spec.y_axis.range)
 

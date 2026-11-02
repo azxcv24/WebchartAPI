@@ -89,11 +89,11 @@ def test_usable_pyramid_rejects_stale(big_dataset):
     meta.row_count += 1
     assert usable_pyramid(meta, "x") is None
 
-    # Or the x bounds shifted.
+    # Or the x bounds shifted (bounds are compared in canonical coordinates).
     meta = get_dataset_meta(big_dataset)
     for c in meta.columns:
         if c.name == "x":
-            c.max_value = float(c.max_value) + 1000
+            c.max_numeric = c.max_numeric + 1000
     assert usable_pyramid(meta, "x") is None
 
 
