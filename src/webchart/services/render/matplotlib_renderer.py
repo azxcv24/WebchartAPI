@@ -59,9 +59,30 @@ class MatplotlibRenderer:
         x_range: tuple[float, float] | None = None,
         y_range: tuple[float, float] | None = None,
     ) -> bytes:
-        """Render a single tile (no axes, no labels, transparent padding)."""
+        """타일 하나를 그린다. 타일은 정사각형 `render_raster`이다."""
+        return self.render_raster(
+            data, x_column, y_columns, chart_type,
+            width_px=tile_size, height_px=tile_size, x_range=x_range, y_range=y_range,
+        )
+
+    def render_raster(
+        self,
+        data: pd.DataFrame,
+        x_column: str,
+        y_columns: list[str],
+        chart_type: ChartType,
+        width_px: int,
+        height_px: int,
+        x_range: tuple[float, float] | None = None,
+        y_range: tuple[float, float] | None = None,
+    ) -> bytes:
+        """축·라벨 없이 데이터 영역만 `width_px × height_px` PNG로 그린다.
+
+        타일 렌더와 오라클 테스트의 정답 렌더가 같은 painter를 쓰도록 공개한다.
+        y_range가 None이면 matplotlib 자동 스케일(데이터 범위 + 여백 5%)을 쓴다.
+        """
         dpi = 100
-        fig = Figure(figsize=(tile_size / dpi, tile_size / dpi), dpi=dpi)
+        fig = Figure(figsize=(width_px / dpi, height_px / dpi), dpi=dpi)
         canvas = FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
         fig.patch.set_alpha(0)
