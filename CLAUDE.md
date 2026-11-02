@@ -72,6 +72,14 @@ ruff check src/
 ruff format src/
 ```
 
+## v2 개선 진행 중 — 반드시 먼저 읽을 것
+
+`docs/improvement-plan.md`가 현재 개발 방향의 기준 문서다 (무왜곡 픽셀 정렬 집계, Phase 0~4).
+- 핵심 목표: 대용량 데이터를 **왜곡 없이** 서버에서 그리고, 브라우저는 DOM 최소(차트당 ≤ 3개), 인터랙션은 WS 스트리밍
+- 무왜곡 = 오라클 테스트(원본 전체 렌더와 픽셀 비교)로 검증되는 계약. 근사 경로는 응답에 `exact=false` 표기
+- 아래 "Downsampling"의 LTTB 기본값은 Phase 1에서 M4(픽셀 열별 first/last/min/max)로 교체 예정
+- 코드 컨벤션(이름에 단위, `[start, end)` 범위, 한국어 docstring, 패턴 적용 기준)은 계획 문서 6장을 따른다
+
 ## Conventions
 
 - 모든 API 엔드포인트는 `/api/v1/` 접두사 사용
