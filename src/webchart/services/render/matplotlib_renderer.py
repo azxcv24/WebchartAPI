@@ -59,11 +59,20 @@ class Drawing(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class RawDrawing:
-    """집계 없이 원본 점을 그대로 그리는 레이어 (오라클 정답, 소량 데이터용)."""
+class PaintItem:
+    """그릴 레이어 하나: 명세 + 도형. 그리기 프로세스로 보내는 형태다.
+
+    application 계층의 LayerDrawing을 그대로 보내면 그리기 워커가 unpickle하면서 application
+    계층 전체(Dask 포함)를 import해 워커마다 첫 요청이 약 0.4초 늦어진다. 그래서 이 모듈의
+    단순한 타입으로 바꿔 보낸다 (`paint_items`).
+    """
 
     layer: LayerSpec
     shape: object
+
+
+def paint_items(drawings: Sequence[Drawing]) -> list[PaintItem]:
+    return [PaintItem(drawing.layer, drawing.shape) for drawing in drawings]
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,15 +83,41 @@ class AxisTicks:
     y: dict[AxisName, list[Tick]] = field(default_factory=dict)
 
 
-def raw_drawings(spec: ChartSpec, data: pd.DataFrame) -> list[RawDrawing]:
-    """원본 DataFrame 전체를 그대로 그릴 레이어들 (line, area만 지원)."""
+def paint_raster(
+    drawings: Sequence[Drawing],
+    x_range: XRange,
+    y_ranges: dict[AxisName, YRange] | None,
+    width_px: int,
+    height_px: int,
+    dpr: int,
+    background_color: str,
+) -> bytes:
+    """`MatplotlibRenderer.render_raster`의 모듈 함수판 (그리기 프로세스 풀에 넘기기 위해)."""
+    return MatplotlibRenderer().render_raster(
+        drawings, x_range, y_ranges, width_px, height_px, dpr, background_color
+    )
+
+
+def paint_chart(
+    spec: ChartSpec,
+    drawings: Sequence[Drawing],
+    x_view: XRange | None,
+    y_ranges: dict[AxisName, YRange] | None,
+    ticks: "AxisTicks | None",
+) -> bytes:
+    """`MatplotlibRenderer.render_chart`의 모듈 함수판."""
+    return MatplotlibRenderer().render_chart(spec, drawings, x_view, y_ranges, ticks)
+
+
+def raw_drawings(spec: ChartSpec, data: pd.DataFrame) -> list[PaintItem]:
+    """원본 DataFrame 전체를 집계 없이 그릴 레이어들 (line, area만, 오라클 정답·소량 데이터용)."""
     x = to_canonical(data[spec.x_axis.column])
     drawings = []
     for layer in spec.layers:
         if layer.kind not in (LayerKind.LINE, LayerKind.AREA):
             raise ValueError(f"원본 직접 그리기는 line/area만 지원한다: {layer.kind.value}")
         y = data[layer.data_columns[0]].to_numpy(dtype=np.float64, na_value=np.nan)
-        drawings.append(RawDrawing(layer, Polyline(x, y)))
+        drawings.append(PaintItem(layer, Polyline(x, y)))
     return drawings
 
 

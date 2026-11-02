@@ -320,7 +320,10 @@ def add_points(density: DensityGrid, x: FloatArray, y: FloatArray) -> None:
         (column >= 0) & (column < density.grid.bucket_count) & (row >= 0) & (row < density.rows)
     )
     flat = row[inside] * density.grid.bucket_count + column[inside]
-    density.counts.reshape(-1)[:] += np.bincount(flat, minlength=density.counts.size)
+    # 칠해진 셀에만 더한다. bincount(minlength=전체 셀 수)는 점이 적어도 격자 전체
+    # (피라미드 빌드 때 수백만 셀)를 매번 새로 만들고 더해 매우 느리다.
+    cells, counts = np.unique(flat, return_counts=True)
+    density.counts.reshape(-1)[cells] += counts
 
 
 def normalize_density(counts: npt.NDArray[np.int64], how: str) -> FloatArray:

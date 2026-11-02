@@ -218,6 +218,10 @@ async def delete_dataset(dataset_id: str):
     except WebchartError as e:
         raise webchart_error_to_http(e)
 
+    from webchart.application.tiles import tile_memory_cache
+
+    tile_memory_cache.discard_prefix(f"tile:{dataset_id}:")
+
     try:
         removed = await delete_sessions_for_dataset(dataset_id)
         if removed:

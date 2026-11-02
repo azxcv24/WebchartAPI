@@ -1,6 +1,7 @@
+import os
 from pathlib import Path
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -50,9 +51,17 @@ class Settings(BaseSettings):
 
     # Rendering
     render_pool_size: int = 8
+    # 그리기(matplotlib) 프로세스 수. matplotlib은 GIL에 묶여 스레드로는 늘지 않는다.
+    # 0이면 렌더 스레드에서 그린다 (테스트·작은 서버).
+    paint_processes: int = Field(default_factory=lambda: min(8, max(1, (os.cpu_count() or 2) // 2)))
     tile_size: int = 512
     default_chart_width: int = 1200
     default_chart_height: int = 600
+
+    # 프로세스 내 L1 타일 캐시 상한 (바이트). Redis(L2) 앞에서 같은 워커의 재요청을 받는다.
+    tile_memory_cache_bytes: int = 512 * 1024**2
+    # /metrics (Prometheus 텍스트) 노출 여부
+    metrics_enabled: bool = True
 
     # Cache TTL (seconds)
     tile_cache_ttl: int = 3600

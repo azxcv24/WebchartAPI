@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from webchart.api import viewer
 from webchart.api.middleware import RateLimitMiddleware, RequestIdMiddleware, TimingMiddleware
@@ -12,6 +13,7 @@ from webchart.cache.redis_cache import close_redis, init_redis
 from webchart.config import settings
 from webchart.core.concurrency import init_render_pool, shutdown_render_pool
 from webchart.core.logging import setup_logging
+from webchart.core.metrics import metrics
 from webchart.services.ingest.clickhouse import ClickHouseIngestBackend
 from webchart.services.ingest.ftp import FtpIngestBackend
 from webchart.services.ingest.http import HttpIngestBackend
@@ -84,6 +86,15 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    if settings.metrics_enabled:
+
+        @app.get("/metrics", include_in_schema=False)
+        async def prometheus_metrics() -> PlainTextResponse:
+            """캐시 적중률, 렌더 지연, 경로별 exact 비율 (Prometheus 텍스트 형식)."""
+            return PlainTextResponse(
+                metrics.render_prometheus(), media_type="text/plain; version=0.0.4"
+            )
 
     return app
 

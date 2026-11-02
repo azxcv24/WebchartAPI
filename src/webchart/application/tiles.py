@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -24,8 +25,10 @@ from webchart.application.windows import (
 )
 from webchart.application.y_ranges import resolve_y_ranges
 from webchart.cache import redis_cache
+from webchart.cache.memory_cache import ByteLRU
 from webchart.config import settings
-from webchart.core.concurrency import run_in_thread
+from webchart.core.concurrency import paint, run_in_thread
+from webchart.core.metrics import metrics, source_kind
 from webchart.domain.geometry import BucketGrid, PixelLattice, TileAddress, XRange
 from webchart.domain.projection import DensityGrid
 from webchart.domain.y_range import YRange, YRangePolicy
@@ -36,7 +39,7 @@ from webchart.models.chart import (
     ChartSpec,
 )
 from webchart.models.dataset import DatasetMeta
-from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
+from webchart.services.render.matplotlib_renderer import paint_items, paint_raster
 
 logger = logging.getLogger("webchart.application.tiles")
 
@@ -45,8 +48,6 @@ PREFETCH_RADIUS = 2
 
 # 보이는 타일이 없을 때(뷰포트가 데이터 밖) VIEWPORT y범위를 구하는 격자 폭
 VIEWPORT_PROBE_BUCKETS = 512
-
-_painter = MatplotlibRenderer()
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,39 +140,54 @@ class PipelineTileRenderer:
     def _render_sync(request: TileRequest) -> RenderedTile:
         drawn = tile_drawings(request)
         grid = request.lattice.tile_grid(request.tile, request.dpr)
-        image = _painter.render_raster(
-            drawn.drawings,
+        image = paint(
+            paint_raster,
+            paint_items(drawn.drawings),
             grid.x_range,
             request.y_ranges,
-            width_px=request.size_px,
-            height_px=request.size_px,
-            dpr=request.dpr,
-            background_color=request.spec.background_color,
+            request.size_px,
+            request.size_px,
+            request.dpr,
+            request.spec.background_color,
         )
         return RenderedTile(request.tile, request.dpr, image, drawn.is_exact, drawn.source)
 
 
 class CachedTileRenderer:
-    """데코레이터: 캐시에 있으면 그대로, 없으면 내부 렌더러로 그려 저장한다.
+    """데코레이터: L1(프로세스 메모리) → L2(Redis) → 내부 렌더러 순으로 찾는다.
 
-    캐시 장애는 렌더를 막지 않는다 (경고만 남기고 캐시 없이 그린다).
+    렌더한 타일은 L1과 L2 모두에 저장한다. 캐시 장애는 렌더를 막지 않는다
+    (경고만 남기고 캐시 없이 그린다). 타일 경로는 근사가 없으므로(밀도 피라미드는 정렬될
+    때만 쓴다) 캐시에서 나온 타일도 정확하다.
     """
 
-    def __init__(self, inner: TileRenderer) -> None:
+    def __init__(self, inner: TileRenderer, memory: ByteLRU) -> None:
         self._inner = inner
+        self._memory = memory
 
     async def render(self, request: TileRequest) -> RenderedTile:
         key = request.cache_key()
+        cached = self._memory.get(key)
+        if cached is not None:
+            metrics.increment(_TILE_REQUESTS, _TILE_REQUESTS_HELP, outcome="l1_hit")
+            return RenderedTile(request.tile, request.dpr, cached, True, "cache")
         try:
             cached = await redis_cache.get_tile(key)
         except Exception as error:
             logger.debug(f"타일 캐시 조회 실패, 캐시 없이 그린다: {error}")
             cached = None
         if cached is not None:
-            # 타일 경로는 근사가 없으므로(밀도 피라미드는 정렬될 때만 쓴다) 캐시도 정확하다
+            metrics.increment(_TILE_REQUESTS, _TILE_REQUESTS_HELP, outcome="l2_hit")
+            self._memory.put(key, cached)
             return RenderedTile(request.tile, request.dpr, cached, True, "cache")
 
+        started = time.perf_counter()
         rendered = await self._inner.render(request)
+        source = source_kind(rendered.source)
+        metrics.increment(_TILE_REQUESTS, _TILE_REQUESTS_HELP, outcome="rendered")
+        metrics.increment(_EXACT, _EXACT_HELP, source=source, exact=str(rendered.is_exact).lower())
+        metrics.observe(_LATENCY, _LATENCY_HELP, time.perf_counter() - started, source=source)
+        self._memory.put(key, rendered.image)
         try:
             await redis_cache.set_tile(key, rendered.image)
         except Exception as error:
@@ -179,7 +195,16 @@ class CachedTileRenderer:
         return rendered
 
 
-default_tile_renderer: TileRenderer = CachedTileRenderer(PipelineTileRenderer())
+_TILE_REQUESTS = "webchart_tile_requests_total"
+_TILE_REQUESTS_HELP = "타일 요청 수 (l1_hit, l2_hit, rendered)"
+_EXACT = "webchart_tile_renders_total"
+_EXACT_HELP = "실제로 그린 타일 수 (경로별, exact 여부별)"
+_LATENCY = "webchart_tile_render_seconds"
+_LATENCY_HELP = "캐시 없이 타일 하나를 그린 시간 (경로별)"
+
+tile_memory_cache = ByteLRU(settings.tile_memory_cache_bytes)
+
+default_tile_renderer: TileRenderer = CachedTileRenderer(PipelineTileRenderer(), tile_memory_cache)
 
 
 @dataclass(frozen=True, slots=True)

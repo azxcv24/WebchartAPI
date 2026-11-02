@@ -81,8 +81,10 @@ class ColumnInfo(BaseModel):
         return self
 
 
-# 현재 피라미드 형식. 1 = 이전 min-max 행 선택 형식(더 이상 쓰지 않음), 2 = BucketStats 격자
-PYRAMID_FORMAT_VERSION = 2
+# 현재 피라미드 형식.
+# 1 = 이전 min-max 행 선택 형식, 2 = BucketStats 격자 Arrow IPC (실시간 추가 전, 짧게 씀),
+# 3 = BucketStats 격자 .npy (쓰기 가능한 mmap). 형식이 다르면 쓰지 않고 다시 빌드해야 한다.
+PYRAMID_FORMAT_VERSION = 3
 
 
 class PyramidInfo(BaseModel):
@@ -96,6 +98,8 @@ class PyramidInfo(BaseModel):
     """
 
     version: int = 1
+    # 레벨 파일이 있는 하위 디렉터리 (빌드·격자 확장마다 새 이름)
+    storage: str = ""
     x_column: str
     columns: list[str]
     max_level: int  # 레벨 0..max_level을 쓸 수 있다

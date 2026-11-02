@@ -9,6 +9,7 @@
 4. paint: 축·제목·범례가 있는 완성 차트. 눈금은 서버 눈금 서비스 (application/axes.py)
 """
 
+import time
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,6 +20,8 @@ from webchart.application.density import fetch_view_density
 from webchart.application.layers import LayerDrawing, project_layers
 from webchart.application.windows import fetch_view_windows
 from webchart.application.y_ranges import resolve_y_ranges
+from webchart.core.concurrency import paint
+from webchart.core.metrics import metrics, source_kind
 from webchart.domain.geometry import BucketGrid, XRange
 from webchart.domain.projection import DensityGrid, Polyline
 from webchart.domain.y_range import YRangePolicy, autoscale_bounds
@@ -26,7 +29,12 @@ from webchart.models.chart import DENSITY_LAYER_KINDS, ChartSpec, DownsampleAlgo
 from webchart.models.dataset import ColumnInfo
 from webchart.services.data.access import get_dataset_meta
 from webchart.services.data.downsample import downsample
-from webchart.services.render.matplotlib_renderer import AxisTicks, MatplotlibRenderer
+from webchart.services.render.matplotlib_renderer import (
+    AxisTicks,
+    MatplotlibRenderer,
+    paint_chart,
+    paint_items,
+)
 
 _painter = MatplotlibRenderer()
 
@@ -41,6 +49,25 @@ class RenderedChart:
 
 def render_static_chart(spec: ChartSpec) -> RenderedChart:
     """spec 하나를 완성 차트 이미지로 그린다 (동기, 렌더 스레드에서 호출)."""
+    started = time.perf_counter()
+    rendered = _render(spec)
+    source = source_kind(rendered.source)
+    metrics.increment(
+        "webchart_static_renders_total",
+        "정적 렌더 수 (경로별, exact 여부별)",
+        source=source,
+        exact=str(rendered.is_exact).lower(),
+    )
+    metrics.observe(
+        "webchart_static_render_seconds",
+        "정적 렌더 하나의 시간 (경로별)",
+        time.perf_counter() - started,
+        source=source,
+    )
+    return rendered
+
+
+def _render(spec: ChartSpec) -> RenderedChart:
     meta = get_dataset_meta(spec.dataset_id)
     x_column = spec.x_axis.column
     x_info = next((c for c in meta.columns if c.name == x_column), None)
@@ -74,7 +101,7 @@ def render_static_chart(spec: ChartSpec) -> RenderedChart:
         x=x_ticks(spec, x_info, x_view, width_px),
         y={name: y_ticks(y_range, height_px) for name, y_range in y_ranges.items()},
     )
-    image = _painter.render_chart(spec, drawings, x_view, y_ranges, ticks)
+    image = paint(paint_chart, spec, paint_items(drawings), x_view, y_ranges, ticks)
     return RenderedChart(
         image=image,
         is_exact=all(exact),

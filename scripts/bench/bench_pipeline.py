@@ -80,12 +80,14 @@ def run(rows: int, series: int, chunk_rows: int) -> list[StepResult]:
     from webchart.application.tiles import PipelineTileRenderer, TileRequest, plan_frame
     from webchart.application.windows import lattice_for
     from webchart.config import settings
+    from webchart.core.concurrency import init_render_pool
     from webchart.domain.geometry import TileAddress
     from webchart.models.chart import AxisConfig, ChartSpec
     from webchart.services.data.access import get_dataset_meta
     from webchart.services.ingest.upload import convert_to_parquet
     from webchart.testing.synthetic import X_COLUMN, series_column
 
+    init_render_pool()  # 렌더 스레드 풀 + 그리기 프로세스 풀 (설정 paint_processes)
     y_columns = [series_column(i) for i in range(series)]
     spec = ChartSpec(dataset_id=DATASET_ID, x_axis=AxisConfig(column=X_COLUMN), y_columns=y_columns)
     source = settings.data_dir / "uploads" / "bench.parquet"
@@ -130,6 +132,29 @@ def run(rows: int, series: int, chunk_rows: int) -> list[StepResult]:
     deep_zoom = _deep_zoom()
     deep_label = f"타일 z={deep_zoom} (원본, 좁은 범위)"
     results.append(measure(deep_label, lambda: render_tile(deep_zoom), _image_note))
+
+    def render_frame_tiles(zoom: int) -> int:
+        """줌 zoom의 타일 전부를 WS 경로처럼 동시에 그린다 (캐시 없이)."""
+        meta = get_dataset_meta(DATASET_ID)
+        lattice = lattice_for(meta, X_COLUMN, settings.tile_size)
+        plan = plan_frame(meta, spec, lattice.domain, zoom, prefetch_radius=0)
+        renderer = PipelineTileRenderer()
+
+        async def all_tiles() -> int:
+            requests = [TileRequest(meta, spec, lattice, t, 1, plan.y_ranges) for t in plan.visible]
+            images = await asyncio.gather(*(renderer.render(r) for r in requests))
+            return len(images)
+
+        return asyncio.run(all_tiles())
+
+    for attempt in (1, 2):  # 2회차는 그리기 워커가 모두 떠 있는 상태 (정상 상태 처리량)
+        results.append(
+            measure(
+                f"프레임: 타일 64장 동시, 그리기 프로세스 {settings.paint_processes}개 ({attempt}회차)",
+                lambda: render_frame_tiles(6),
+                lambda count: f"{count}장",
+            )
+        )
     return results
 
 

@@ -6,7 +6,12 @@ from webchart.application.windows import lattice_for, pyramid_dir
 from webchart.config import settings
 from webchart.core.errors import DatasetProcessingError
 from webchart.domain.y_range import YRange
-from webchart.infrastructure.pyramid_store import DensityPlan, choose_max_level
+from webchart.infrastructure.pyramid_store import (
+    DensityPlan,
+    choose_max_level,
+    new_storage_name,
+    remove_old_storage,
+)
 from webchart.infrastructure.pyramid_store import build_pyramid as build_levels
 from webchart.models.dataset import PYRAMID_FORMAT_VERSION, ColumnKind, DatasetMeta, PyramidInfo
 from webchart.services.data.access import get_dataset_meta, raw_store, save_dataset_meta
@@ -40,9 +45,10 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
         meta.row_count, len(y_columns), settings.pyramid_max_level, settings.pyramid_max_bytes
     )
     density = _density_plan(meta, y_columns, max_level)
+    storage = new_storage_name()
     size_bytes = build_levels(
         raw_store(meta),
-        pyramid_dir(dataset_id, x_column),
+        pyramid_dir(dataset_id, x_column) / storage,
         x_column,
         y_columns,
         domain,
@@ -51,6 +57,7 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
     )
     info = PyramidInfo(
         version=PYRAMID_FORMAT_VERSION,
+        storage=storage,
         x_column=x_column,
         columns=y_columns,
         max_level=max_level,
@@ -67,6 +74,7 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
     fresh = get_dataset_meta(dataset_id)
     fresh.pyramids[x_column] = info
     save_dataset_meta(fresh)
+    remove_old_storage(pyramid_dir(dataset_id, x_column), keep=storage)
     logger.info(
         f"피라미드 빌드: {dataset_id}/{x_column} L0..L{max_level}, {size_bytes / 1e6:.1f} MB"
     )

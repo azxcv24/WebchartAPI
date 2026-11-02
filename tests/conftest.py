@@ -37,6 +37,12 @@ def fake_redis(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def paint_in_threads(monkeypatch):
+    """테스트는 그리기 프로세스 풀 없이 렌더 스레드에서 그린다 (프로세스 기동 비용 회피)."""
+    monkeypatch.setattr(settings, "paint_processes", 0)
+
+
+@pytest.fixture(autouse=True)
 def disable_rate_limit(monkeypatch):
     """Rate limit interferes with tight test loops; disable by default."""
     monkeypatch.setattr(settings, "rate_limit_enabled", False)

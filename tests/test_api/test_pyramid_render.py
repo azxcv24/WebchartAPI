@@ -33,7 +33,7 @@ def test_build_pyramid_endpoint_lifecycle(client, tmp_data_dir):
     while time.time() < deadline:
         listed = client.get("/api/v1/datasets/pyr1/pyramids").json()
         if "x" in listed:
-            assert listed["x"]["version"] == 2
+            assert listed["x"]["version"] == 3
             assert listed["x"]["method"] == "bucket_stats"
             assert listed["x"]["max_level"] >= 1
             return

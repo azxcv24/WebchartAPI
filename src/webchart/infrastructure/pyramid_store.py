@@ -1,10 +1,15 @@
-"""피라미드 저장소 v2: 격자 정렬 BucketStats 레벨 (계획 문서 2.2~2.4, 2.8).
+"""피라미드 저장소: 격자 정렬 BucketStats 레벨 (계획 문서 2.2~2.4, 2.8, 4.3).
 
-파일 구조: `datasets/{id}/pyramid/{x_column}/L{level}.arrow`
-- 레벨 하나 = Arrow IPC 파일 하나 (압축 없음). 행 i = 버킷 i (조밀 배열).
-- 컬럼: `row_count`(버킷의 행 수, 결측 y 포함) + 시리즈마다 `{시리즈}:{BucketStats 필드}`.
-- 읽을 때 mmap으로 열어 파이썬 힙 밖의 OS 페이지 캐시를 그대로 쓴다 (제로카피).
-  서버 RAM이 크면 자주 쓰는 레벨이 자연히 메모리에 상주한다 (P6).
+파일 구조: `datasets/{id}/pyramid/{x_column}/{storage}/`
+- `L{level}/{컬럼}.npy`: 레벨 하나 = 컬럼별 numpy 배열 파일. 원소 i = 버킷 i (조밀 배열).
+  컬럼은 `row_count`(버킷의 행 수, 결측 y 포함)와 시리즈마다 `{시리즈}:{BucketStats 필드}`.
+- `D{level}/{시리즈}.npy`: 2D 밀도 개수 (x 열 우선, 열마다 y 행 rows개가 연속).
+- 읽을 때 mmap으로 연다. 파이썬 힙 밖의 OS 페이지 캐시를 그대로 쓰므로(제로카피) RAM이 큰
+  서버에서는 자주 쓰는 레벨이 자연히 메모리에 상주한다 (P6).
+- 실시간 추가(append)는 같은 파일을 쓰기 가능한 mmap으로 열어 해당 버킷만 merge한다.
+  그래서 Arrow IPC(읽기 전용 매핑) 대신 .npy를 쓴다.
+- `{storage}`는 빌드·격자 확장마다 새로 만드는 디렉터리 이름이다. meta.json이 새 이름을
+  가리키는 순간 읽는 쪽이 한 번에 넘어가, 반쯤 바뀐 피라미드를 읽는 일이 없다.
 
 빌드: 원본 로우그룹을 하나씩 읽어 최상세 레벨에 merge하고(메모리 = 최상세 레벨 + 로우그룹 1개),
 상위 레벨은 아래 레벨 버킷을 2개씩 merge해 만든다. BucketStats가 모노이드라 결과가 정확하다.
@@ -14,6 +19,7 @@ import logging
 import math
 import shutil
 import threading
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,8 +58,16 @@ def stat_column(series: str, field: str) -> str:
     return f"{series}:{field}"
 
 
-def level_path(pyramid_dir: Path, level: int) -> Path:
-    return pyramid_dir / f"L{level}.arrow"
+def level_dir(storage_dir: Path, level: int) -> Path:
+    return storage_dir / f"L{level}"
+
+
+def density_dir(storage_dir: Path, level: int) -> Path:
+    return storage_dir / f"D{level}"
+
+
+def new_storage_name() -> str:
+    return uuid.uuid4().hex[:12]
 
 
 # 최상세 레벨 버킷 하나에 들어가는 평균 행 수의 하한. 버킷(시리즈당 96바이트)이 원본 행보다
@@ -91,14 +105,14 @@ class DensityPlan:
 
 def build_pyramid(
     store: RawStore,
-    pyramid_dir: Path,
+    storage_dir: Path,
     x_column: str,
     y_columns: list[str],
     lattice_domain: XRange,
     max_level: int,
     density: DensityPlan | None = None,
 ) -> int:
-    """피라미드 레벨 0..max_level(과 밀도 레벨)을 만들고 전체 파일 크기(바이트)를 반환한다."""
+    """레벨 0..max_level(과 밀도 레벨)을 storage_dir에 만들고 전체 크기(바이트)를 반환한다."""
     if not y_columns:
         raise DatasetProcessingError("피라미드에는 y 컬럼이 하나 이상 필요하다")
     grid = BucketGrid.covering(lattice_domain, 1 << max_level)
@@ -121,35 +135,27 @@ def build_pyramid(
         _accumulate(batch, x_column, y_columns, grid, row_count, stats)
         _accumulate_density(batch, x_column, densities)
 
-    if pyramid_dir.exists():
-        shutil.rmtree(pyramid_dir)
-    pyramid_dir.mkdir(parents=True)
-
+    storage_dir.mkdir(parents=True)
     total_bytes = 0
     for level in range(max_level, -1, -1):
-        total_bytes += _write_level(level_path(pyramid_dir, level), row_count, stats)
+        total_bytes += _write_level(level_dir(storage_dir, level), row_count, stats)
         if level > 0:
             row_count = row_count.reshape(-1, 2).sum(axis=1)
             stats = {series: level_stats.merge_pairs() for series, level_stats in stats.items()}
 
     # 밀도: counts[행, 열] → 열 우선(열마다 행 rows개가 연속)으로 저장해 x 구간을 연속으로 자른다
-    columns_major = {series: d.counts.T.copy() for series, d in densities.items()}
+    columns_major = {series: d.counts.T.astype(np.int64) for series, d in densities.items()}
     for level in range(density.max_level if density else -1, -1, -1):
-        table = pa.table(
-            {f"{series}:density": counts.reshape(-1).astype(np.uint32)
-             for series, counts in columns_major.items()}
-        )  # fmt: skip
-        total_bytes += _write_table(density_level_path(pyramid_dir, level), table)
+        total_bytes += _write_arrays(
+            density_dir(storage_dir, level),
+            {series: counts.reshape(-1) for series, counts in columns_major.items()},
+        )
         if level > 0:
             columns_major = {
                 series: counts.reshape(-1, 2, counts.shape[1]).sum(axis=1)
                 for series, counts in columns_major.items()
             }
     return total_bytes
-
-
-def density_level_path(pyramid_dir: Path, level: int) -> Path:
-    return pyramid_dir / f"density_L{level}.arrow"
 
 
 def _accumulate_density(batch: pa.Table, x_column: str, densities: dict[str, DensityGrid]) -> None:
@@ -190,18 +196,22 @@ def _accumulate(
         merge_into(stats[series], ids, part)
 
 
-def _write_level(path: Path, row_count: IntArray, stats: dict[str, BucketStats]) -> int:
-    columns: dict[str, npt.NDArray[np.generic]] = {_ROW_COUNT: row_count}
+def _write_level(directory: Path, row_count: IntArray, stats: dict[str, BucketStats]) -> int:
+    columns: dict[str, npt.NDArray[Any]] = {_ROW_COUNT: row_count}
     for series, level_stats in stats.items():
         for field in _STAT_FIELDS:
             columns[stat_column(series, field)] = getattr(level_stats, field)
-    return _write_table(path, pa.table(columns))
+    return _write_arrays(directory, columns)
 
 
-def _write_table(path: Path, table: pa.Table) -> int:
-    with pa.OSFile(str(path), "wb") as sink, pa.ipc.new_file(sink, table.schema) as writer:
-        writer.write_table(table)
-    return path.stat().st_size
+def _write_arrays(directory: Path, arrays: dict[str, npt.NDArray[Any]]) -> int:
+    directory.mkdir(parents=True, exist_ok=True)
+    total = 0
+    for name, values in arrays.items():
+        path = directory / f"{name}.npy"
+        np.save(path, np.ascontiguousarray(values))
+        total += path.stat().st_size
+    return total
 
 
 # --- 읽기 -------------------------------------------------------------------------
@@ -209,28 +219,27 @@ def _write_table(path: Path, table: pa.Table) -> int:
 
 @dataclass(frozen=True, slots=True)
 class PyramidLevel:
-    """mmap으로 연 피라미드 레벨 하나."""
+    """mmap으로 연 피라미드 레벨 하나 (읽기 전용 배열 뷰)."""
 
     level: int
     grid: BucketGrid
-    table: pa.Table
+    directory: Path
 
     @property
     def row_count(self) -> IntArray:
-        return self._column(_ROW_COUNT)
+        return self.column(_ROW_COUNT)
 
     def stats(self, series: str, buckets: slice) -> BucketStats:
-        """버킷 구간의 집계. mmap 버퍼의 뷰라 복사하지 않는다."""
+        """버킷 구간의 집계. mmap 배열의 뷰라 복사하지 않는다."""
         return BucketStats(
-            **{field: self._column(stat_column(series, field))[buckets] for field in _STAT_FIELDS}
+            **{field: self.column(stat_column(series, field))[buckets] for field in _STAT_FIELDS}
         )
 
     def has_series(self, series: str) -> bool:
-        return stat_column(series, "count") in self.table.column_names
+        return (self.directory / f"{stat_column(series, 'count')}.npy").exists()
 
-    def _column(self, name: str) -> npt.NDArray[Any]:
-        values: npt.NDArray[Any] = self.table.column(name).chunk(0).to_numpy(zero_copy_only=True)
-        return values
+    def column(self, name: str) -> npt.NDArray[Any]:
+        return open_array(self.directory / f"{name}.npy")
 
 
 class PyramidReader:
@@ -239,7 +248,7 @@ class PyramidReader:
     def __init__(self, pyramid_dir: Path, info: PyramidInfo) -> None:
         if info.domain_start is None or info.domain_end is None:
             raise ValueError("피라미드 정보에 격자 범위가 없다")
-        self._dir = pyramid_dir
+        self._dir = pyramid_dir / info.storage
         self.info = info
         # 격자는 타일 크기와 무관하므로 tile_size_px는 아무 2의 거듭제곱이면 된다
         self.lattice = PixelLattice(XRange(info.domain_start, info.domain_end), tile_size_px=1)
@@ -247,8 +256,7 @@ class PyramidReader:
     def level(self, level: int) -> PyramidLevel:
         if not 0 <= level <= self.info.max_level:
             raise ValueError(f"레벨 {level}은 0..{self.info.max_level} 범위 밖이다")
-        table = _open_level_table(level_path(self._dir, level))
-        return PyramidLevel(level, self.lattice.level_grid(level), table)
+        return PyramidLevel(level, self.lattice.level_grid(level), level_dir(self._dir, level))
 
     def has_density(self, series: str) -> bool:
         return self.info.density_max_level is not None and series in self.info.density_y_ranges
@@ -267,12 +275,7 @@ class PyramidReader:
         level_grid = self.lattice.level_grid(level)
         stored_low, stored_high = info.density_y_ranges[series]
         stored_rows = info.density_rows
-        values = (
-            _open_level_table(density_level_path(self._dir, level))
-            .column(f"{series}:density")
-            .chunk(0)
-            .to_numpy(zero_copy_only=True)
-        )
+        values = open_array(density_dir(self._dir, level) / f"{series}.npy")
 
         first = int(
             np.clip(level_grid.index_of(np.array([grid.origin]))[0], 0, level_grid.bucket_count)
@@ -385,24 +388,39 @@ def _search(rows: IntArray, boundary: int, step: int) -> int | None:
         width *= 4
 
 
-# 열린 레벨 파일 캐시. mmap은 가볍지만 파일을 매번 다시 여는 비용을 아낀다.
-# 키에 수정 시각을 넣어 재빌드된 파일은 새로 연다 (이전 mmap은 이전 inode를 계속 가리켜 안전).
-_MAX_OPEN_LEVELS = 256
-_open_levels: OrderedDict[tuple[str, int], pa.Table] = OrderedDict()
-_open_levels_lock = threading.Lock()
+# 열린 배열 파일 캐시. mmap은 가볍지만 파일을 매번 다시 여는 비용을 아낀다.
+# 키에 inode를 넣는다: 새 storage 디렉터리의 파일은 새로 열고, 실시간 추가로 같은 파일을
+# 고치면(같은 inode) 공유 매핑이라 열어 둔 배열에서도 바뀐 값이 보인다.
+_MAX_OPEN_ARRAYS = 4096
+_open_arrays: OrderedDict[tuple[str, int], npt.NDArray[Any]] = OrderedDict()
+_open_arrays_lock = threading.Lock()
 
 
-def _open_level_table(path: Path) -> pa.Table:
-    key = (str(path), path.stat().st_mtime_ns)
-    with _open_levels_lock:
-        table = _open_levels.get(key)
-        if table is not None:
-            _open_levels.move_to_end(key)
-            return table
-    # mmap을 닫지 않는다: 테이블 버퍼가 매핑을 직접 가리키므로 테이블이 살아 있는 동안 유지된다
-    table = pa.ipc.open_file(pa.memory_map(str(path), "r")).read_all()
-    with _open_levels_lock:
-        _open_levels[key] = table
-        while len(_open_levels) > _MAX_OPEN_LEVELS:
-            _open_levels.popitem(last=False)
-    return table
+def open_array(path: Path) -> npt.NDArray[Any]:
+    """읽기 전용 mmap 배열."""
+    key = (str(path), path.stat().st_ino)
+    with _open_arrays_lock:
+        values = _open_arrays.get(key)
+        if values is not None:
+            _open_arrays.move_to_end(key)
+            return values
+    values = np.load(path, mmap_mode="r")
+    with _open_arrays_lock:
+        _open_arrays[key] = values
+        while len(_open_arrays) > _MAX_OPEN_ARRAYS:
+            _open_arrays.popitem(last=False)
+    return values
+
+
+def remove_old_storage(pyramid_dir: Path, keep: str) -> None:
+    """keep을 뺀 이전 storage 디렉터리(과 이전 형식 파일)를 지운다.
+
+    지운 파일을 mmap으로 열어 둔 렌더는 계속 읽을 수 있다 (리눅스는 매핑이 닫힐 때 해제).
+    """
+    for entry in pyramid_dir.iterdir():
+        if entry.name == keep:
+            continue
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink(missing_ok=True)
