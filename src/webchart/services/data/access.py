@@ -31,6 +31,14 @@ def get_dataset_meta(dataset_id: str) -> DatasetMeta:
     return DatasetMeta.model_validate_json(meta_path.read_text())
 
 
+def save_dataset_meta(meta: DatasetMeta) -> None:
+    """meta.json을 원자적으로 교체한다 (쓰는 도중 다른 스레드가 반쯤 쓴 파일을 읽지 않게)."""
+    meta_path = _dataset_dir(meta.dataset_id) / "meta.json"
+    staging = meta_path.with_suffix(".json.tmp")
+    staging.write_text(meta.model_dump_json(indent=2))
+    staging.replace(meta_path)
+
+
 def read_full(dataset_id: str) -> dd.DataFrame:
     """Read the full dataset as a lazy Dask DataFrame."""
     data_dir = _dataset_dir(dataset_id) / "data"

@@ -69,7 +69,7 @@ def test_render_rejects_oversize_width(client):
 
 
 def test_render_time_axis_with_range_and_downsampling(client):
-    """시간 x축 정적 렌더: 정규 좌표(epoch ns) 범위 + LTTB 다운샘플 경로 (D3 회귀 방지)."""
+    """시간 x축 정적 렌더: 정규 좌표(epoch ns) 범위 + M4 집계 경로 (D3 회귀 방지)."""
     times = pd.date_range("2026-01-01", periods=10_000, freq="s")
     df = pd.DataFrame({"ts": times.astype(str), "y": range(10_000)})
     r = client.post(
@@ -94,4 +94,7 @@ def test_render_time_axis_with_range_and_downsampling(client):
 
     assert r.status_code == 200, r.text
     assert r.content[:8] == b"\x89PNG\r\n\x1a\n"
-    assert int(r.headers["X-Data-Points"]) == 800  # 5000행 → 2 × 400px
+    # 5000행을 데이터 영역 폭(310px)의 픽셀 열마다 최대 4점 + 좌우 이웃 점으로 집계한다
+    width_px = round(0.9 * 400) - round(0.125 * 400)
+    assert 0 < int(r.headers["X-Data-Points"]) <= 4 * width_px + 2
+    assert (r.headers["X-Webchart-Exact"], r.headers["X-Webchart-Source"]) == ("true", "raw")

@@ -23,8 +23,15 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from webchart.core.errors import DatasetNotFoundError, QueryTooLargeError
-from webchart.domain.bucket_stats import FloatArray, IntArray
-from webchart.domain.geometry import XRange
+from webchart.domain.bucket_stats import (
+    BucketStats,
+    FloatArray,
+    IntArray,
+    aggregate_sorted,
+    merge_into,
+)
+from webchart.domain.geometry import BucketGrid, XRange
+from webchart.domain.projection import SeriesWindow
 from webchart.services.data.x_domain import canonical_from_arrow
 
 logger = logging.getLogger("webchart.infrastructure.raw_store")
@@ -160,6 +167,46 @@ class RawStore:
         x = canonical_from_arrow(table.column(x_column))
         return _select_range(x, table, x_range, include_neighbors)
 
+    def aggregate(
+        self, x_column: str, y_columns: list[str], grid: BucketGrid
+    ) -> dict[str, SeriesWindow]:
+        """격자 범위의 원본을 버킷별로 집계한다 (정확). 로우그룹을 하나씩 읽어 합친다.
+
+        메모리는 격자 크기 + 로우그룹 1개라, 범위가 넓어도(전체 데이터여도) 터지지 않는다.
+        시간은 읽는 행 수에 비례한다. 좌우 이웃은 원본 행 하나씩이다.
+        """
+        zone_map = self.zone_map(x_column)
+        x_range = grid.x_range
+        groups = set(zone_map.overlapping(x_range).tolist())
+        for neighbor in (
+            zone_map.nearest_before(x_range.start),
+            zone_map.nearest_after(x_range.end),
+        ):
+            if neighbor is not None:
+                groups.add(neighbor)
+
+        accumulated = {series: BucketStats.empty(grid.bucket_count) for series in y_columns}
+        lead = _EdgeRow(x=-np.inf)
+        trail = _EdgeRow(x=np.inf)
+        columns = list(dict.fromkeys([x_column, *y_columns]))
+        for group in sorted(groups):
+            table = self._read_groups(zone_map, np.array([group]), columns)
+            x = canonical_from_arrow(table.column(x_column))
+            values = {series: canonical_from_arrow(table.column(series)) for series in y_columns}
+            lead = lead.closer_before(x, values, x_range.start)
+            trail = trail.closer_after(x, values, x_range.end)
+            _merge_inside(x, values, grid, accumulated)
+
+        return {
+            series: SeriesWindow(
+                grid=grid,
+                stats=accumulated[series],
+                lead=lead.as_stats(series),
+                trail=trail.as_stats(series),
+            )
+            for series in y_columns
+        }
+
     def iter_row_groups(self, columns: list[str]) -> Iterator[pa.Table]:
         """모든 로우그룹을 저장 순서대로 하나씩 읽는다 (피라미드 빌드용, 메모리 = 로우그룹 1개)."""
         for path in self._files:
@@ -198,6 +245,66 @@ class RawStore:
             schema = pq.read_schema(self._files[0]) if self._files else pa.schema([])
             return schema.empty_table().select(columns)
         return pa.concat_tables(pieces)
+
+
+@dataclass(frozen=True, slots=True)
+class _EdgeRow:
+    """범위 바로 앞(또는 뒤)의 원본 행 후보. 로우그룹을 읽어 가며 더 가까운 행으로 바꾼다."""
+
+    x: float
+    values: dict[str, float] | None = None
+
+    def closer_before(
+        self, x: FloatArray, values: dict[str, FloatArray], start: float
+    ) -> "_EdgeRow":
+        before = np.flatnonzero(x < start)
+        if len(before) == 0:
+            return self
+        # 같은 x가 여럿이면 저장 순서상 마지막 행
+        best = int(before[len(before) - 1 - np.argmax(x[before][::-1])])
+        if x[best] < self.x:
+            return self
+        return _EdgeRow(
+            float(x[best]), {name: float(column[best]) for name, column in values.items()}
+        )
+
+    def closer_after(self, x: FloatArray, values: dict[str, FloatArray], end: float) -> "_EdgeRow":
+        after = np.flatnonzero(x >= end)
+        if len(after) == 0:
+            return self
+        best = int(after[np.argmin(x[after])])
+        if x[best] >= self.x:
+            return self
+        return _EdgeRow(
+            float(x[best]), {name: float(column[best]) for name, column in values.items()}
+        )
+
+    def as_stats(self, series: str) -> BucketStats:
+        if self.values is None:
+            return BucketStats.empty(0)
+        return BucketStats.from_points(np.array([self.x]), np.array([self.values[series]]))
+
+
+def _merge_inside(
+    x: FloatArray,
+    values: dict[str, FloatArray],
+    grid: BucketGrid,
+    accumulated: dict[str, BucketStats],
+) -> None:
+    """로우그룹 하나에서 격자 안의 점을 버킷별로 집계해 누적값에 합친다."""
+    x_range = grid.x_range
+    inside = np.flatnonzero((x >= x_range.start) & (x < x_range.end))
+    if len(inside) == 0:
+        return
+    inside_x = x[inside]
+    if np.any(np.diff(inside_x) < 0):
+        order = np.argsort(inside_x, kind="stable")
+        inside, inside_x = inside[order], inside_x[order]
+    # 경계의 부동소수 반올림으로 격자 밖 번호가 나오지 않게 자른다
+    index = np.clip(grid.index_of(inside_x), 0, grid.bucket_count - 1)
+    for series, column in values.items():
+        ids, part = aggregate_sorted(inside_x, column[inside], index)
+        merge_into(accumulated[series], ids, part)
 
 
 def _range_mask(x: FloatArray, x_range: XRange | None) -> npt.NDArray[np.bool_]:

@@ -1,20 +1,16 @@
-"""Chart rendering API endpoints."""
+"""정적 차트 렌더 API."""
 
 import uuid
 
 from fastapi import APIRouter
 from fastapi.responses import Response
 
+from webchart.application.static_chart import RenderedChart, render_static_chart
 from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import WebchartError, webchart_error_to_http
 from webchart.models.chart import ChartSpec, ImageFormat, RenderResult
-from webchart.services.data.access import read_window
-from webchart.services.data.downsample import downsample
-from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
 
 router = APIRouter(prefix="/charts", tags=["charts"])
-
-_renderer = MatplotlibRenderer()
 
 _MIME_TYPES = {
     ImageFormat.PNG: "image/png",
@@ -23,80 +19,45 @@ _MIME_TYPES = {
 }
 
 
-@router.post("/render")
-async def render_chart(spec: ChartSpec):
-    """Render a static chart image."""
+async def _render(spec: ChartSpec) -> RenderedChart:
     try:
-        # Read data
-        x_col = spec.x_axis.column
-        y_columns = _get_y_columns(spec)
-        columns = [x_col] + y_columns
+        return await run_in_thread(render_static_chart, spec)
+    except WebchartError as error:
+        raise webchart_error_to_http(error) from error
 
-        x_range = spec.x_axis.range
-        data = await run_in_thread(
-            read_window, spec.dataset_id, x_col, x_range, columns,
-        )
 
-        # Downsample if necessary
-        target_points = spec.width * 2
-        if len(data) > target_points and y_columns:
-            data = downsample(
-                data, x_col, y_columns[0], target_points, spec.downsample_algorithm,
-            )
+def _provenance_headers(rendered: RenderedChart) -> dict[str, str]:
+    """그림이 원본 전체 렌더와 같은지(exact)와 어디서 읽었는지(source)를 알린다 (P3)."""
+    return {
+        "X-Render-Id": str(uuid.uuid4()),
+        "X-Data-Points": str(rendered.point_count),
+        "X-Webchart-Exact": "true" if rendered.is_exact else "false",
+        "X-Webchart-Source": rendered.source,
+    }
 
-        # Render
-        image_bytes = await run_in_thread(_renderer.render, spec, data)
 
-    except WebchartError as e:
-        raise webchart_error_to_http(e)
-
+@router.post("/render")
+async def render_chart(spec: ChartSpec) -> Response:
+    """차트 이미지를 그린다. 응답 헤더에 exact/source가 붙는다."""
+    rendered = await _render(spec)
     return Response(
-        content=image_bytes,
+        content=rendered.image,
         media_type=_MIME_TYPES[spec.format],
-        headers={
-            "X-Render-Id": str(uuid.uuid4()),
-            "X-Data-Points": str(len(data)),
-        },
+        headers=_provenance_headers(rendered),
     )
 
 
 @router.post("/render/info", response_model=RenderResult)
-async def render_chart_info(spec: ChartSpec):
-    """Render chart and return metadata (without the image)."""
-    try:
-        x_col = spec.x_axis.column
-        y_columns = _get_y_columns(spec)
-        columns = [x_col] + y_columns
-
-        data = await run_in_thread(
-            read_window, spec.dataset_id, x_col, spec.x_axis.range, columns,
-        )
-
-        target_points = spec.width * 2
-        if len(data) > target_points and y_columns:
-            data = downsample(
-                data, x_col, y_columns[0], target_points, spec.downsample_algorithm,
-            )
-
-        image_bytes = await run_in_thread(_renderer.render, spec, data)
-
-    except WebchartError as e:
-        raise webchart_error_to_http(e)
-
+async def render_chart_info(spec: ChartSpec) -> RenderResult:
+    """차트를 그리고 이미지 대신 메타데이터만 반환한다."""
+    rendered = await _render(spec)
     return RenderResult(
         render_id=str(uuid.uuid4()),
         format=spec.format,
         width=spec.width,
         height=spec.height,
-        size_bytes=len(image_bytes),
+        size_bytes=len(rendered.image),
+        is_exact=rendered.is_exact,
+        source=rendered.source,
+        point_count=rendered.point_count,
     )
-
-
-def _get_y_columns(spec: ChartSpec) -> list[str]:
-    if spec.series:
-        return [s.column for s in spec.series]
-    elif spec.y_columns:
-        return spec.y_columns
-    elif spec.y_axis:
-        return [spec.y_axis.column]
-    return []

@@ -1,14 +1,17 @@
 """WebSocket message protocol definitions."""
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 # --- Client → Server ---
 
 class ViewportChangeMessage(BaseModel):
     type: str = "viewport_change"
     x_range: tuple[float, float]
-    y_range: tuple[float, float] | None = None
-    zoom: int = 0
+    y_range: tuple[float, float] | None = None  # 무시된다: y범위는 서버가 정책으로 정한다
+    zoom: int = Field(default=0, ge=0, le=24)
+    dpr: Literal[1, 2, 4] | None = None  # None이면 세션의 기존 값
 
 
 class HoverMessage(BaseModel):
@@ -57,6 +60,8 @@ class ViewportAckMessage(BaseModel):
     x_range: tuple[float, float]
     zoom: int
     tile_count: int
+    y_range: tuple[float, float] | None = None  # 이 프레임의 모든 타일이 공유하는 y범위
+    exact: bool = True
 
 
 class ErrorMessage(BaseModel):

@@ -72,21 +72,30 @@ class ColumnInfo(BaseModel):
         return self
 
 
-class PyramidInfo(BaseModel):
-    """Metadata for a multi-resolution pyramid built on one x column."""
+# 현재 피라미드 형식. 1 = 이전 min-max 행 선택 형식(더 이상 쓰지 않음), 2 = BucketStats 격자
+PYRAMID_FORMAT_VERSION = 2
 
+
+class PyramidInfo(BaseModel):
+    """x 컬럼 하나에 대한 다중 해상도 집계 피라미드 (계획 문서 2.2~2.4).
+
+    레벨 L은 x 전체 범위 `[domain_start, domain_end)`를 2^L개 버킷으로 균등 분할하고,
+    버킷마다 모든 시리즈의 BucketStats를 담는다. 타일 픽셀 열 하나가 버킷 하나와 정확히
+    겹치므로(L = z + log2(타일 px · dpr)) 피라미드에서 그린 타일도 원본과 같은 그림이다.
+
+    이전 형식(version 1)의 meta.json도 읽을 수 있지만 사용하지 않는다 (다시 빌드해야 한다).
+    """
+
+    version: int = 1
     x_column: str
     columns: list[str]
-    max_level: int  # levels 0..max_level are available
-    points_per_tile: int  # target points each tile wants (drives level pick)
-    method: str = "minmax"
-    total_points: int = 0  # rows in the finest level
-    x_min: float | None = None
-    x_max: float | None = None
-    # Fingerprint of the base data the pyramid was built against. If the
-    # dataset is re-ingested and these no longer match the current meta,
-    # the pyramid is stale and must not be used.
-    source_row_count: int = 0
+    max_level: int  # 레벨 0..max_level을 쓸 수 있다
+    method: str = "bucket_stats"
+    # 빌드한 원본의 data_version. 재인제스트로 달라지면 이 피라미드는 쓰지 않는다.
+    data_version: str = ""
+    domain_start: float | None = None
+    domain_end: float | None = None
+    size_bytes: int = 0
     built_at: datetime = Field(default_factory=_utcnow)
 
 
@@ -171,12 +180,11 @@ class DatasetPreviewResponse(BaseModel):
 
 
 class PyramidBuildRequest(BaseModel):
-    x_column: str = Field(description="Numeric column the pyramid is indexed by")
+    x_column: str = Field(description="피라미드의 x축 컬럼 (수치 또는 시간)")
     columns: list[str] | None = Field(
         default=None,
-        description="y columns to carry (defaults to all numeric columns)",
+        description="집계할 y 컬럼 (기본값: x를 뺀 모든 수치 컬럼)",
     )
-    method: str = "minmax"
 
 
 class PyramidBuildResponse(BaseModel):

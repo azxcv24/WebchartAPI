@@ -50,9 +50,7 @@ class YRange:
     @classmethod
     def autoscaled(cls, data_low: float, data_high: float) -> "YRange":
         """데이터 최솟값·최댓값 → matplotlib 자동 스케일과 같은 표시 범위."""
-        low, high = _nonsingular(data_low, data_high)
-        margin = (high - low) * AUTOSCALE_MARGIN
-        return cls(low - margin, high + margin)
+        return cls(*autoscale_bounds(data_low, data_high))
 
     def snapped_outward(self, steps: int = 8) -> "YRange":
         """눈금 간격(1·2·5 × 10^k)의 배수로 바깥쪽으로 넓힌다.
@@ -62,6 +60,16 @@ class YRange:
         """
         step = nice_step((self.high - self.low) / steps)
         return YRange(math.floor(self.low / step) * step, math.ceil(self.high / step) * step)
+
+
+def autoscale_bounds(data_low: float, data_high: float) -> tuple[float, float]:
+    """matplotlib 선형 축 자동 스케일 규칙: 폭 0 범위 넓히기 → 양쪽 여백 5%.
+
+    y축뿐 아니라 x 범위를 지정하지 않은 정적 렌더의 x축에도 같은 규칙을 쓴다.
+    """
+    low, high = _nonsingular(data_low, data_high)
+    margin = (high - low) * AUTOSCALE_MARGIN
+    return low - margin, high + margin
 
 
 def nice_step(raw_step: float) -> float:

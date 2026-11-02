@@ -1,6 +1,6 @@
 # WebchartAPI v2 개선 계획 — 무왜곡 대용량 차트 엔진
 
-> 작성: 2026-11-02 · 상태: **Phase 0 완료 → Phase 1 착수 전** (진행 기록은 10장)
+> 작성: 2026-11-02 · 상태: **Phase 1 완료 → Phase 2 진행** (진행 기록은 10장)
 > 출발점: Gemini 리뷰(2026-10-29) + 코드 직접 검증 결과
 
 ---
@@ -33,12 +33,12 @@
 
 | ID | 문제 | 근거 / 재현 결과 | 영향 |
 |---|---|---|---|
-| **D1** | 타일마다 y축 스케일이 다르다 | [tile_renderer.py:112](../src/webchart/services/render/tile_renderer.py#L112)에서 `render_tile`에 `y_range`를 넘기지 않는다. 캐시 키에도 y범위가 없다. | 타일을 이어 붙이면 경계에서 선이 어긋남 |
-| **D2** | 2번째 이후 시리즈의 피크가 사라진다 | `downsample_multi_series`가 첫 y컬럼만 기준으로 점을 고른다. 100만 행에 넣은 2번째 시리즈 스파이크 **20개 중 0개** 보존 (lttb, minmax 둘 다). | 다중 시리즈 차트 전부 |
+| ~~D1~~ ✅ | 타일마다 y축 스케일이 다르다 (Phase 1.6에서 해결) | [tile_renderer.py:112](../src/webchart/services/render/tile_renderer.py#L112)에서 `render_tile`에 `y_range`를 넘기지 않는다. 캐시 키에도 y범위가 없다. | 타일을 이어 붙이면 경계에서 선이 어긋남 |
+| ~~D2~~ ✅ | 2번째 이후 시리즈의 피크가 사라진다 (Phase 1.5에서 해결) | `downsample_multi_series`가 첫 y컬럼만 기준으로 점을 고른다. 100만 행에 넣은 2번째 시리즈 스파이크 **20개 중 0개** 보존 (lttb, minmax 둘 다). | 다중 시리즈 차트 전부 |
 | ~~D3~~ ✅ | 시간 x축이 동작하지 않는다 (Phase 0.5에서 해결) | CSV의 날짜는 `large_string`으로, Parquet의 timestamp는 `Timestamp` 객체로 저장된다. 둘 다 `_resolve_x_range`가 `None`을 반환해 x범위가 0~1로 대체된다. | 시계열(주 용도) 타일 세션 전체 |
-| **D4** | 다운샘플 버킷이 행 개수 기준이다 | `_minmax`, `_average`, LTTB 모두 행 인덱스로 버킷을 나눈다. 샘플링 간격이 불규칙하면 픽셀과 버킷이 어긋난다. LTTB는 단일 스파이크 50개 중 45개만 보존했다. | 정확성 보장 불가 |
-| **D5** | 타일 경로가 피라미드 envelope를 다시 깎는다 | 피라미드는 모든 시리즈의 min/max를 보존하는데, 타일 렌더러가 그 결과에 첫 컬럼 기준 LTTB를 한 번 더 적용한다. | D2와 같은 손실 |
-| **D6** | 범위 읽기가 전체 스캔이다 | `read_window`가 Dask에서 필터를 뒤늦게 걸고, `shape[0].compute()`와 `compute()`로 두 번 스캔한다. 인제스트 시 x 정렬도 없다. | 수백 GB에서 깊은 줌 타일 1장 = 전체 스캔 2회 |
+| ~~D4~~ ✅ | 다운샘플 버킷이 행 개수 기준이다 (Phase 1.1·1.4에서 해결) | `_minmax`, `_average`, LTTB 모두 행 인덱스로 버킷을 나눈다. 샘플링 간격이 불규칙하면 픽셀과 버킷이 어긋난다. LTTB는 단일 스파이크 50개 중 45개만 보존했다. | 정확성 보장 불가 |
+| ~~D5~~ ✅ | 타일 경로가 피라미드 envelope를 다시 깎는다 (Phase 1.5에서 해결) | 피라미드는 모든 시리즈의 min/max를 보존하는데, 타일 렌더러가 그 결과에 첫 컬럼 기준 LTTB를 한 번 더 적용한다. | D2와 같은 손실 |
+| ~~D6~~ ✅ | 범위 읽기가 전체 스캔이다 (Phase 1.2에서 해결) | `read_window`가 Dask에서 필터를 뒤늦게 걸고, `shape[0].compute()`와 `compute()`로 두 번 스캔한다. 인제스트 시 x 정렬도 없다. | 수백 GB에서 깊은 줌 타일 1장 = 전체 스캔 2회 |
 | **D7** | Candlestick과 Heatmap이 미구현이다 | 각각 line, scatter로 대체되고 경고만 남긴다. | 기능 누락 |
 | **D8** | WS 처리가 직렬이고 취소가 없다 | 모든 타일을 `gather`로 다 그린 뒤에 전송을 시작한다. 빠른 패닝 시 요청이 쌓인다. 타일 크기 512는 하드코딩되어 있다. 호버는 `y_range`가 없으면 (0,1)로 가정하고, 첫 시리즈만 반환한다. | 체감 랙, 잘못된 호버 |
 | ~~D9~~ ✅ | 좌표 계산이 4곳에 흩어져 있다 (Phase 0.4에서 해결) | `math_utils`, `tile_renderer`, `interaction`, `pyramid`이 각자 x→타일→픽셀 변환을 한다. | 버그 재발의 구조적 원인 |
@@ -153,8 +153,11 @@ min_y, min_x,      max_y, max_x          # min/max가 실제로 일어난 x까�
 | L1 프로세스 내 | 렌더된 타일 바이트, 원본 zone map | 바이트 상한 LRU (`WEBCHART_MEMORY_BUDGET_*`) |
 | L2 Redis | 타일 바이트, 세션 | 기존 유지. 프로세스 재시작과 다중 워커 사이에서 공유 |
 
-피라미드 크기 추정: 시리즈 1개, 레벨 24(약 1,600만 버킷) × 약 80B = **약 1.3GB**. 모든 레벨을 합쳐도 이 크기의 약 2배다.
-최대 레벨은 메모리 예산으로 자동 결정한다.
+피라미드 크기: 버킷 하나 = 8B(행 수) + 시리즈당 96B(필드 12개). 모든 레벨 합은 최상세의 약 2배다.
+최대 레벨은 세 가지 중 가장 작은 값이다 (`choose_max_level`).
+- 설정 상한 `pyramid_max_level`(24)
+- 메모리 예산 `pyramid_max_bytes`(4GB)
+- 버킷당 평균 16행 이상: 그보다 세밀하면 피라미드가 원본보다 커진다. 더 깊은 줌은 원본 범위 읽기로 충분히 싸다.
 
 ---
 
@@ -338,13 +341,13 @@ CachedTileRenderer(데코레이터)가 위 전체를 감싸 L1→L2 캐시 조�
 
 | # | 작업 |
 |---|---|
-| 1.1 | `domain/bucket_stats.py`: BucketStats 모노이드 + 정렬된 x에서 O(n) 벡터화 커널 (`searchsorted` + `reduceat`) |
-| 1.2 | `RawStore`: x 정렬 인제스트 불변식, 로우그룹 zone map, pyarrow 범위 읽기. `read_window`의 전체 스캔 제거 (D6) |
-| 1.3 | `PyramidStore` v2: 격자 정렬 레벨, 모든 시리즈, Arrow IPC mmap, 상위 레벨은 merge로 생성. meta에 `pyramid_version=2` 기록. v1 파일은 무시 |
-| 1.4 | 투영: M4(line), envelope(band). 결측 버킷은 선 끊기 (P5) |
-| 1.5 | 타일 경로 교체: 레벨 = z + t + log2(dpr), 깊은 줌은 원본 M4, 경계 이웃 버킷 포함. LTTB 재적용 제거 (D2, D5) |
-| 1.6 | y범위 정책 + 캐시 키(`data_version`, layer hash, y범위, z, i, dpr, fmt) (D1) |
-| 1.7 | 정적 렌더도 같은 파이프라인 사용. `exact`/`source` 응답 헤더 (P3) |
+| 1.1 ✅ | `domain/bucket_stats.py`: BucketStats 모노이드 + 정렬된 x에서 O(n) 벡터화 커널 (`searchsorted` + `reduceat`) |
+| 1.2 ✅ | `RawStore`: x 정렬 인제스트 불변식, 로우그룹 zone map, pyarrow 범위 읽기. `read_window`의 전체 스캔 제거 (D6) |
+| 1.3 ✅ | `PyramidStore` v2: 격자 정렬 레벨, 모든 시리즈, Arrow IPC mmap, 상위 레벨은 merge로 생성. meta에 `pyramid_version=2` 기록. v1 파일은 무시 |
+| 1.4 ✅ | 투영: M4(line), envelope(band). 결측 버킷은 선 끊기 (P5) |
+| 1.5 ✅ | 타일 경로 교체: 레벨 = z + t + log2(dpr), 깊은 줌은 원본 M4, 경계 이웃 버킷 포함. LTTB 재적용 제거 (D2, D5) |
+| 1.6 ✅ | y범위 정책 + 캐시 키(`data_version`, layer hash, y범위, z, i, dpr, fmt) (D1) |
+| 1.7 ✅ | 정적 렌더도 같은 파이프라인 사용. `exact`/`source` 응답 헤더 (P3) |
 
 **완료 기준:** line/band 오라클 테스트가 픽셀 일치(안티앨리어싱 허용 오차 ε 이내)하고, D1·D2·D4·D5·D6의 xfail이 해제된다. 벤치마크 수치를 이 문서에 기록한다.
 
@@ -392,12 +395,20 @@ LTTB는 "빠른 미리보기용 근사" 옵션으로만 남기고 기본값에�
 
 | 레이어 | 정의 | 허용 오차 |
 |---|---|---|
-| line | 원본 전체 래스터 = 집계 래스터 | 안티앨리어싱 끈 상태 0px. 켠 상태는 ε(채널당 차이 ≤ 2/255인 픽셀 비율 기준) |
+| line | 원본 전체 래스터 = 집계 래스터 (픽셀 열별 잉크 외곽선 비교) | 세로 1px, 가로 1열 × dpr (아래 주) |
 | band / candlestick | 픽셀 열별 min·max(·first·last)가 원본과 일치 | 0 |
 | bar | 각 막대 값 = 명시한 집계(sum/mean/count)의 정확값 | 부동소수 오차 |
 | density | 픽셀별 카운트가 원본 비닝과 일치 | 0 |
 | hover / 통계 | 반환 값이 원본 행에 실제로 존재하는 값 | 0 |
 | 결측 | 결측 구간을 선이 가로지르지 않음 (`gaps=break`) | 0 |
+
+> 주: 가로 1열 허용은 **선 굵기 번짐** 때문이다 (Phase 1에서 실측).
+> M4 정리는 폭이 0인 선에 대한 정리다. matplotlib은 선을 폭 있는 다각형으로 칠하므로,
+> 픽셀 열 경계 근처의 가파른 선분은 이웃 열까지 번진다. 원본은 열마다 점이 수백 개라
+> 번지는 모양이 M4(열당 4점)와 다르다. 실측: 원본 10만 점, 400px에서 허용 0열이면 어긋난 열 36%(최대 58px),
+> 허용 1열이면 0열. 선 굵기 3px까지 같다. dpr 2에서는 선의 픽셀 굵기가 2배라 2열을 허용한다.
+> 사라진 피크는 자기 열과 이웃 열 모두에서 수백 px 차이가 나므로 이 허용에 가려지지 않는다
+> (기존 버그 7건 모두 허용 1열에서도 23~98% 열이 어긋났다).
 
 ---
 
@@ -405,7 +416,7 @@ LTTB는 "빠른 미리보기용 근사" 옵션으로만 남기고 기본값에�
 
 | 항목 | 내용 | 제안 |
 |---|---|---|
-| 정렬 비용 | 정렬되지 않은 수백 GB 소스는 외부 정렬이 필요해 인제스트가 느려진다 | 정렬 여부를 먼저 검사하고, 정렬 상태면 생략. 미정렬일 때만 Dask `sort_values` |
+| 정렬 비용 | 정렬되지 않은 수백 GB 소스는 외부 정렬이 필요해 인제스트가 느려진다 | 구현됨: 먼저 그대로 쓰고 정렬 컬럼 하나만 읽어 검사, 미정렬일 때만 Dask `sort_values` |
 | matplotlib 처리량 | GIL 때문에 스레드 풀 확장에 한계가 있을 수 있다 | Phase 4에서 측정 후 결정. 밀도 래스터와 단순 라인은 numpy 직접 그리기 검토 |
 | 호환성 깨짐 | WS 프로토콜 v2, 피라미드 v2 | 공식 클라이언트가 아직 없으므로 v2로 전환하고 v1은 Phase 3에서 제거 **(확인 필요)** |
 | 기본 타임존 | 시간축 표시 기준 | 저장 규칙은 Phase 0.5에서 확정(naive는 벽시계 유지, 오프셋은 UTC). 차트 표시 기본 타임존은 Phase 2.5 축 서비스에서 결정 **(확인 필요)** |
@@ -464,3 +475,40 @@ LTTB는 "빠른 미리보기용 근사" 옵션으로만 남기고 기본값에�
 - 깊은 줌 타일은 필요한 행이 약 1만 개뿐인데도 시간이 **전체 데이터 크기에 비례**한다(D6 실측).
   20억 행이면 타일 1장에 약 2분이 걸린다는 뜻이다. Phase 1.2(RawStore)의 1차 목표다.
 - 정적 렌더는 피라미드를 쓰지 않아 5M행을 넘으면 전체 범위를 그릴 수 없다. Phase 1.7에서 같은 파이프라인으로 통합해 해결한다.
+
+### Phase 1 — 완료 (2026-11-02)
+
+| 커밋 | 내용 |
+|---|---|
+| `feat(domain)` | `BucketGrid`, `BucketStats` 모노이드(벡터 커널), `m4_polyline`(결측 끊기), `YRange`(matplotlib과 같은 자동 스케일). 오라클에 선 굵기 허용(8장 주) |
+| `feat(raw-store)` | x 정렬 인제스트(131,072행 로우그룹), `data_version`/`sort_column`, zone map 범위 읽기 |
+| `feat(render)` | 피라미드 v2(Arrow IPC + mmap), `application/`(windows·tiles·static_chart·y_ranges), 프레임 공유 y범위, 캐시 키 v2, `X-Webchart-Exact`/`Source` 헤더 |
+
+구조 (계획 3.1의 계층이 생김)
+- `domain/`: geometry, bucket_stats, projection, y_range. `mypy --strict` 통과
+- `infrastructure/`: raw_store(zone map 범위 읽기·스트리밍 집계), pyramid_store(빌드·mmap 읽기)
+- `application/`: windows(경로 선택 = plan), tiles(파이프라인 + `CachedTileRenderer` 데코레이터), static_chart, y_ranges, pyramids
+- 제거: `services/render/tile_renderer.py`, `services/data/pyramid.py`(v1), `cache/keys.py`
+
+경로 선택(`application/windows.py`)은 2.4의 계획대로다. 단, 원본 경로는 행을 모아 두지 않고
+**로우그룹을 하나씩 읽어 집계**하므로, 범위가 아무리 넓어도 메모리가 터지지 않는다(이전의 500만 행 상한 실패가 사라짐).
+
+**오라클 현황**: 18개 모두 통과, 알려진 실패 0. 기존 7건(D1·D2·D4·D5)이 해제됐고 다음을 새로 검사한다.
+- 결측 구간 끊기 (원본·피라미드)
+- 피라미드 최대 레벨보다 깊은 줌(원본 경로)의 타일 경계 연결
+- dpr 2
+- 시간축 피라미드
+- 정적 렌더: 원본 경로(exact), 피라미드 근사(exact=false, 최대 3px 이내), 레벨과 경계가 맞는 피라미드(exact)
+
+**벤치마크** (같은 장비, 캐시 없이 처음 그리기, `scripts/bench/bench_pipeline.py`)
+
+| 단계 | 20M행 × 2시리즈 Phase 0 | Phase 1 |
+|---|---:|---:|
+| 인제스트 | 4.44s | 6.49s (정렬 검사 + 로우그룹) |
+| 타일 z=0, 피라미드 없음 | **실패** (5M 상한) | 1.14s, exact |
+| 정적 렌더 전체 범위 | **실패** (5M 상한) | 1.16s, exact (원본 2,000만 행 집계) |
+| 피라미드 빌드 | 4.00s | 2.25s (L0..L20, 420MB) |
+| 타일 z=0, 피라미드 | 0.05s | 0.03s, exact |
+| 깊은 줌 타일 (원본) | 1.28s | **0.02s** (64배) |
+
+1M행에서는 모든 단계가 0.6s 이하다. 깊은 줌 타일 시간은 이제 전체 데이터 크기와 무관하다(D6).

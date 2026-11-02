@@ -7,7 +7,7 @@
     PYTHONPATH=src python scripts/bench/bench_pipeline.py --rows 5000000 --series 2
 
 측정 조건:
-- 타일 캐시(Redis)는 끈다. 항상 처음 그리는 경우(cold)를 잰다.
+- 타일 캐시를 거치지 않는다(PipelineTileRenderer 직접 호출). 항상 처음 그리는 경우(cold)를 잰다.
 - 같은 프로세스에서 단계를 차례로 실행한다. 메모리는 프로세스 최대 RSS(누적)이다.
 - 실패한 단계(예: 행 수 상한 초과)도 결과로 기록한다. 그 자체가 개선 대상이다.
 """
@@ -73,45 +73,38 @@ def write_source(path: Path, rows: int, series: int, chunk_rows: int) -> int:
     return path.stat().st_size
 
 
-def disable_tile_cache() -> None:
-    from webchart.cache import redis_cache
-
-    async def miss(_key: str) -> None:
-        return None
-
-    async def skip(_key: str, _data: bytes, ttl: int | None = None) -> None:
-        return None
-
-    redis_cache.get_tile = miss
-    redis_cache.set_tile = skip
-
-
 def run(rows: int, series: int, chunk_rows: int) -> list[StepResult]:
     # settings는 import 시점에 환경변수를 읽으므로 경로 설정 후에 import한다
+    from webchart.application.pyramids import build_pyramid
+    from webchart.application.static_chart import render_static_chart
+    from webchart.application.tiles import PipelineTileRenderer, TileRequest, plan_frame
+    from webchart.application.windows import lattice_for
     from webchart.config import settings
+    from webchart.domain.geometry import TileAddress
     from webchart.models.chart import AxisConfig, ChartSpec
-    from webchart.services.data.access import get_dataset_meta, read_window
-    from webchart.services.data.downsample import downsample
-    from webchart.services.data.pyramid import build_pyramid
+    from webchart.services.data.access import get_dataset_meta
     from webchart.services.ingest.upload import convert_to_parquet
-    from webchart.services.render import tile_renderer
-    from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
     from webchart.testing.synthetic import X_COLUMN, series_column
 
-    disable_tile_cache()
     y_columns = [series_column(i) for i in range(series)]
     spec = ChartSpec(dataset_id=DATASET_ID, x_axis=AxisConfig(column=X_COLUMN), y_columns=y_columns)
     source = settings.data_dir / "uploads" / "bench.parquet"
     source.parent.mkdir(parents=True, exist_ok=True)
 
-    def render_tile(zoom: int) -> bytes:
+    def render_tile(zoom: int) -> tuple[bytes, str]:
+        """가운데 타일 하나를 캐시 없이 그린다 (cold)."""
         meta = get_dataset_meta(DATASET_ID)
-        return asyncio.run(tile_renderer.render_tile(DATASET_ID, spec, zoom, 0, meta=meta))
+        lattice = lattice_for(meta, X_COLUMN, settings.tile_size)
+        tile = TileAddress(zoom, lattice.tile_count(zoom) // 2)
+        plan = plan_frame(meta, spec, lattice.tile_range(tile), zoom, prefetch_radius=0)
+        request = TileRequest(meta, spec, plan.lattice, tile, 1, plan.y_range)
+        rendered = asyncio.run(PipelineTileRenderer().render(request))
+        return rendered.image, rendered.source
 
-    def render_static() -> bytes:
-        data = read_window(DATASET_ID, X_COLUMN, None, [X_COLUMN, *y_columns])
-        data = downsample(data, X_COLUMN, y_columns[0], spec.width * 2, "lttb")
-        return MatplotlibRenderer().render(spec, data)
+    def render_static() -> tuple[bytes, str]:
+        rendered = render_static_chart(spec)
+        exact = "exact" if rendered.is_exact else "근사"
+        return rendered.image, f"{rendered.source}, {exact}, {rendered.point_count:,}점"
 
     results = [
         measure(
@@ -120,43 +113,38 @@ def run(rows: int, series: int, chunk_rows: int) -> list[StepResult]:
             lambda size: f"{size / 1e6:.0f} MB",
         ),
         measure(
-            "인제스트 (→ 파티션 Parquet)",
+            "인제스트 (정렬 검사 + 로우그룹 Parquet)",
             lambda: convert_to_parquet(source, DATASET_ID),
-            lambda meta: f"{meta.partition_count} 파티션",
+            lambda meta: f"{meta.partition_count} 파일, 정렬={meta.sort_column}",
         ),
-        measure("타일 z=0 (피라미드 없음, 원본)", lambda: render_tile(0), _png_note),
+        measure("타일 z=0 (피라미드 없음, 원본 집계)", lambda: render_tile(0), _image_note),
+        measure("정적 렌더 전체 범위 (피라미드 없음)", render_static, _image_note),
         measure(
             "피라미드 빌드",
             lambda: build_pyramid(DATASET_ID, X_COLUMN, columns=y_columns),
-            lambda info: f"레벨 0..{info.max_level}, 최상세 {info.total_points:,}점",
+            lambda info: f"L0..L{info.max_level}, {info.size_bytes / 1e6:.0f} MB",
         ),
-        measure("타일 z=0 (피라미드)", lambda: render_tile(0), _png_note),
+        measure("타일 z=0 (피라미드)", lambda: render_tile(0), _image_note),
+        measure("정적 렌더 전체 범위 (피라미드 가능)", render_static, _image_note),
     ]
     deep_zoom = _deep_zoom()
-    results.append(
-        measure(f"타일 z={deep_zoom} (원본, 좁은 범위)", lambda: render_tile(deep_zoom), _png_note)
-    )
-    results.append(measure("정적 렌더 전체 범위 (1200px)", render_static, _png_note))
+    deep_label = f"타일 z={deep_zoom} (원본, 좁은 범위)"
+    results.append(measure(deep_label, lambda: render_tile(deep_zoom), _image_note))
     return results
 
 
 def _deep_zoom() -> int:
-    """피라미드 해상도를 넘어 원본을 읽게 되는 가장 얕은 줌."""
+    """피라미드 최대 레벨을 넘어 원본을 읽게 되는 가장 얕은 줌 (레벨 = 줌 + 9)."""
     from webchart.services.data.access import get_dataset_meta
-    from webchart.services.data.pyramid import level_for_zoom
     from webchart.testing.synthetic import X_COLUMN
 
     info = get_dataset_meta(DATASET_ID).pyramids.get(X_COLUMN)
-    if info is None:
-        return 12
-    zoom = 0
-    while level_for_zoom(info, zoom) is not None:
-        zoom += 1
-    return zoom
+    return 12 if info is None else info.max_level - 9 + 1
 
 
-def _png_note(png: bytes) -> str:
-    return f"{len(png) / 1024:.0f} KB PNG"
+def _image_note(outcome: tuple[bytes, str]) -> str:
+    image, source = outcome
+    return f"{len(image) / 1024:.0f} KB, {source}"
 
 
 def print_table(rows: int, series: int, results: list[StepResult]) -> None:

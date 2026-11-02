@@ -8,8 +8,9 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from webchart.api.auth import hash_api_key, ws_api_key
-from webchart.cache.redis_cache import tile_spec_hash
-from webchart.models.session import ViewportWindow
+from webchart.application.tiles import plan_frame, render_frame
+from webchart.core.concurrency import run_in_thread
+from webchart.domain.geometry import XRange
 from webchart.models.ws_messages import (
     ErrorMessage,
     HoverMessage,
@@ -19,7 +20,7 @@ from webchart.models.ws_messages import (
     ViewportAckMessage,
     ViewportChangeMessage,
 )
-from webchart.services.render.tile_renderer import render_visible_tiles
+from webchart.services.data.access import get_dataset_meta
 from webchart.services.session.interaction import resolve_hover
 from webchart.services.session.manager import get_session, update_viewport
 
@@ -109,59 +110,62 @@ async def _handle_viewport_change(
     session_id: str,
     msg: ViewportChangeMessage,
 ) -> None:
-    """Handle viewport change: compute and stream tiles."""
-    # Preserve existing viewport pixel dimensions if the message omits them
-    # (e.g. when called from the scroll handler) so hover→pixel math stays correct.
-    existing = (await get_session(session_id)).viewport
-    viewport = ViewportWindow(
-        x_range=msg.x_range,
-        y_range=msg.y_range if msg.y_range is not None else existing.y_range,
-        zoom=msg.zoom,
-        pixel_width=existing.pixel_width,
-        pixel_height=existing.pixel_height,
-    )
-
-    state = await update_viewport(session_id, viewport)
+    """뷰포트 변경: 프레임을 계획(타일·공유 y범위)하고 타일을 그려 보낸다."""
+    state = await get_session(session_id)
+    existing = state.viewport
     spec = state.chart_config
-    c_hash = tile_spec_hash(spec.model_dump())
+    meta = await run_in_thread(get_dataset_meta, state.dataset_id)
+    dpr = msg.dpr or existing.dpr
 
-    # Render tiles
-    tiles = await render_visible_tiles(
-        state.dataset_id,
-        spec,
-        viewport.x_range,
-        viewport.zoom,
-        c_hash,
-    )
-
-    # Send tiles metadata
-    tile_infos = [
-        TileInfo(
-            tile_id=tid,
-            x=int(tid.split("-")[1]),
-            y=int(tid.split("-")[2]),
-            width=512,
-            height=512,
-            ready=True,
+    try:
+        view = XRange(*msg.x_range)
+    except ValueError as error:
+        await websocket.send_json(
+            ErrorMessage(code="INVALID_VIEWPORT", message=str(error)).model_dump()
         )
-        for tid in tiles
-    ]
-    await websocket.send_json(
-        TilesMetaMessage(tiles=tile_infos).model_dump()
+        return
+    plan = await run_in_thread(plan_frame, meta, spec, view, msg.zoom, dpr)
+
+    # 서버가 확정한 y범위를 세션에 남겨 호버 좌표 변환이 타일과 같은 스케일을 쓰게 한다
+    viewport = existing.model_copy(
+        update={
+            "x_range": msg.x_range,
+            "y_range": plan.y_range.as_tuple(),
+            "zoom": msg.zoom,
+            "dpr": dpr,
+        }
     )
+    await update_viewport(session_id, viewport)
 
-    # Stream tile images as binary frames
-    for tile_id, tile_bytes in tiles.items():
-        tile_id_bytes = tile_id.encode("utf-8")
+    rendered = await render_frame(meta, spec, plan)
+    tile_size_px = plan.lattice.tile_size_px * dpr
+    await websocket.send_json(
+        TilesMetaMessage(
+            tiles=[
+                TileInfo(
+                    tile_id=tile.tile.tile_id,
+                    x=tile.tile.index,
+                    y=0,
+                    width=tile_size_px,
+                    height=tile_size_px,
+                    ready=True,
+                )
+                for tile in rendered
+            ]
+        ).model_dump()
+    )
+    for tile in rendered:
+        tile_id_bytes = tile.tile.tile_id.encode("utf-8")
         header = struct.pack(">I", len(tile_id_bytes))
-        await websocket.send_bytes(header + tile_id_bytes + tile_bytes)
+        await websocket.send_bytes(header + tile_id_bytes + tile.image)
 
-    # Ack
     await websocket.send_json(
         ViewportAckMessage(
             x_range=viewport.x_range,
             zoom=viewport.zoom,
-            tile_count=len(tiles),
+            tile_count=len(rendered),
+            y_range=plan.y_range.as_tuple(),
+            exact=all(tile.is_exact for tile in rendered),
         ).model_dump()
     )
 
@@ -203,9 +207,5 @@ async def _handle_scroll(
     await _handle_viewport_change(
         websocket,
         session_id,
-        ViewportChangeMessage(
-            x_range=new_x_range,
-            y_range=vp.y_range,
-            zoom=vp.zoom,
-        ),
+        ViewportChangeMessage(x_range=new_x_range, zoom=vp.zoom, dpr=vp.dpr),
     )

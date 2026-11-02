@@ -10,14 +10,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from webchart.application.tiles import PipelineTileRenderer, TileRequest, plan_frame
+from webchart.application.windows import lattice_for
 from webchart.config import settings
-from webchart.domain.geometry import PixelLattice
+from webchart.domain.geometry import TileAddress, XRange
 from webchart.models.chart import AxisConfig, ChartSpec, ChartType
 from webchart.models.dataset import DatasetMeta
-from webchart.services.data.x_domain import to_canonical
 from webchart.services.ingest.upload import convert_to_parquet
-from webchart.services.render import tile_renderer
-from webchart.services.render.matplotlib_renderer import MatplotlibRenderer
+from webchart.services.render.matplotlib_renderer import MatplotlibRenderer, raw_series_lines
 from webchart.testing.raster import (
     RasterDiff,
     compare_envelopes,
@@ -30,19 +30,16 @@ from webchart.testing.synthetic import X_COLUMN
 # 열 외곽선 허용 오차. 안티앨리어싱 경계에서 1px 흔들림은 왜곡으로 보지 않는다.
 TOLERANCE_PX = 1
 
-# 선 굵기 번짐 허용: 이웃 1열까지 (testing/raster.py, 계획 문서 8장)
+# 선 굵기 번짐 허용: 이웃 1열까지 (testing/raster.py, 계획 문서 8장).
+# dpr이 2배면 선의 픽셀 굵기도 2배라 허용 열 수도 dpr배로 늘린다.
 STROKE_REACH_PX = 1
 
 # 허용하는 어긋난 열 수. 무왜곡 계약이므로 0이다.
 MAX_MISMATCHED_COLUMNS = 0
 
 # 알려진 왜곡 버그 목록 (docs/improvement-plan.md 1장). 고치면 여기서 지운다.
-KNOWN_BUGS = {
-    "D1": "타일마다 y축을 자동 스케일해 인접 타일의 스케일이 다르다",
-    "D2": "다중 시리즈 다운샘플링이 첫 y컬럼만 기준으로 점을 고른다",
-    "D4": "다운샘플 버킷이 행 개수 기준이고 LTTB는 피크 보존을 보장하지 않는다",
-    "D5": "타일 경로가 피라미드 envelope에 LTTB를 다시 적용한다",
-}
+# Phase 1에서 D1·D2·D4·D5를 모두 고쳐 지금은 비어 있다.
+KNOWN_BUGS: dict[str, str] = {}
 
 
 def known_bug(bug_id: str) -> pytest.MarkDecorator:
@@ -79,48 +76,58 @@ def line_spec(dataset_id: str, y_columns: list[str]) -> ChartSpec:
     )
 
 
-async def render_pipeline_strip(meta: DatasetMeta, spec: ChartSpec, zoom: int) -> np.ndarray:
-    """줌 `zoom`의 모든 타일을 실제 타일 경로로 그려 왼쪽부터 이어 붙인다."""
-    tile_images = [
-        decode_png(await tile_renderer.render_tile(meta.dataset_id, spec, zoom, index, meta=meta))
-        for index in range(2**zoom)
-    ]
+async def render_pipeline_strip(
+    meta: DatasetMeta, spec: ChartSpec, zoom: int, tiles: range | None = None, dpr: int = 1
+) -> np.ndarray:
+    """줌 `zoom`의 타일들(기본: 전부)을 실제 타일 경로로 그려 왼쪽부터 잇는다.
+
+    y범위는 프레임 계획(plan_frame)이 정한 값을 모든 타일이 공유한다 (실제 WS 경로와 같다).
+    """
+    lattice = lattice_for(meta, spec.x_axis.column, settings.tile_size)
+    plan = plan_frame(meta, spec, lattice.domain, zoom, dpr=dpr, prefetch_radius=0)
+    renderer = PipelineTileRenderer()
+    tile_images = []
+    for index in tiles or range(lattice.tile_count(zoom)):
+        tile = TileAddress(zoom, index)
+        request = TileRequest(meta, spec, plan.lattice, tile, dpr, plan.y_range)
+        tile_images.append(decode_png((await renderer.render(request)).image))
     return stitch_horizontally(tile_images)
 
 
 def render_reference_strip(
-    frame: pd.DataFrame,
-    spec: ChartSpec,
-    lattice: PixelLattice,
-    zoom: int,
+    frame: pd.DataFrame, spec: ChartSpec, x_range: XRange, width_px: int, height_px: int, dpr: int
 ) -> np.ndarray:
-    """원본 전체를 타일 경로와 같은 크기·x구간으로 한 장에 그린다 (정답).
+    """원본 전체를 주어진 x구간·크기로 한 장에 그린다 (정답).
 
-    matplotlib의 경로 단순화(path.simplify)를 끈다. 단순화도 일종의 다운샘플링이라
-    정답 그림에 섞이면 안 된다.
+    집계 없이 모든 행을 그리고, y축은 matplotlib 자동 스케일에 맡긴다(구간 밖 행 포함 전체
+    데이터 기준). 파이프라인 코드(집계, y범위 정책)를 거치지 않아야 정답으로서 독립적이다.
     """
-    x_column = spec.x_axis.column
-    # 타일 경로와 같은 정규 좌표로 그린다 (시간축은 epoch 나노초)
-    reference = frame.assign(**{x_column: to_canonical(frame[x_column])})
-
+    lines = raw_series_lines(spec, frame, spec.y_columns)
     with matplotlib.rc_context({"path.simplify": False}):
         png = MatplotlibRenderer().render_raster(
-            reference,
-            x_column,
-            spec.y_columns,
-            spec.chart_type,
-            width_px=lattice.tile_size_px * 2**zoom,
-            height_px=lattice.tile_size_px,
-            x_range=lattice.domain.as_tuple(),
+            lines, spec.chart_type, x_range, None, width_px, height_px, dpr=dpr
         )
     return decode_png(png)
 
 
 async def diff_tiles_against_reference(
-    frame: pd.DataFrame, meta: DatasetMeta, spec: ChartSpec, zoom: int
+    frame: pd.DataFrame,
+    meta: DatasetMeta,
+    spec: ChartSpec,
+    zoom: int,
+    tiles: range | None = None,
+    dpr: int = 1,
 ) -> RasterDiff:
-    """타일 경로 결과를 정답과 비교한다."""
-    lattice = tile_renderer.lattice_for(meta, spec.x_axis.column)
-    expected = render_reference_strip(frame, spec, lattice, zoom)
-    actual = await render_pipeline_strip(meta, spec, zoom)
-    return compare_envelopes(ink_mask(expected), ink_mask(actual), TOLERANCE_PX, STROKE_REACH_PX)
+    """타일 경로 결과를 같은 구간의 정답과 비교한다."""
+    lattice = lattice_for(meta, spec.x_axis.column, settings.tile_size)
+    tiles = tiles or range(lattice.tile_count(zoom))
+    first = lattice.tile_grid(TileAddress(zoom, tiles[0]), dpr)
+    last = lattice.tile_grid(TileAddress(zoom, tiles[-1]), dpr)
+    size_px = lattice.tile_size_px * dpr
+    expected = render_reference_strip(
+        frame, spec, XRange(first.origin, last.end), size_px * len(tiles), size_px, dpr
+    )
+    actual = await render_pipeline_strip(meta, spec, zoom, tiles, dpr)
+    return compare_envelopes(
+        ink_mask(expected), ink_mask(actual), TOLERANCE_PX, STROKE_REACH_PX * dpr
+    )

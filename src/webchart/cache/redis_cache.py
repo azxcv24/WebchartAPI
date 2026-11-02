@@ -1,7 +1,6 @@
 """Redis cache layer for tiles, queries, and sessions."""
 
 import asyncio
-import hashlib
 import json
 import logging
 from typing import Any
@@ -51,8 +50,7 @@ async def close_redis() -> None:
 
 # --- Tile Cache ---
 
-def tile_key(dataset_id: str, chart_hash: str, zoom: int, tile_x: int, tile_y: int = 0) -> str:
-    return f"tile:{dataset_id}:{chart_hash}:z{zoom}:x{tile_x}:y{tile_y}"
+# 키 형식은 application/tiles.py의 TileRequest.cache_key가 정한다.
 
 
 async def get_tile(key: str) -> bytes | None:
@@ -63,12 +61,6 @@ async def get_tile(key: str) -> bytes | None:
 async def set_tile(key: str, data: bytes, ttl: int | None = None) -> None:
     r = await get_redis()
     await r.set(key, data, ex=ttl or settings.tile_cache_ttl)
-
-
-async def get_tiles_multi(keys: list[str]) -> dict[str, bytes | None]:
-    r = await get_redis()
-    values = await r.mget(keys)
-    return dict(zip(keys, values))
 
 
 # --- Session Cache ---
@@ -120,32 +112,3 @@ async def delete_sessions_for_dataset(dataset_id: str) -> int:
             await r.delete(raw_key)
             deleted += 1
     return deleted
-
-
-# --- Utility ---
-
-def chart_spec_hash(spec: dict[str, Any]) -> str:
-    """Generate a deterministic hash for a chart specification (full)."""
-    canonical = json.dumps(spec, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]
-
-
-# Fields that actually affect tile pixels. Title, width/height, format,
-# legend etc. do NOT change tile contents (tiles are headless), so excluding
-# them lets the same tile cache serve many chart sizes.
-_TILE_HASH_FIELDS = (
-    "chart_type",
-    "x_axis",
-    "y_axis",
-    "y_columns",
-    "series",
-    "downsample_algorithm",
-    "background_color",
-)
-
-
-def tile_spec_hash(spec: dict[str, Any]) -> str:
-    """Deterministic hash for the tile-affecting subset of a chart spec."""
-    subset = {k: spec.get(k) for k in _TILE_HASH_FIELDS}
-    canonical = json.dumps(subset, sort_keys=True, default=str)
-    return hashlib.sha256(canonical.encode()).hexdigest()[:16]

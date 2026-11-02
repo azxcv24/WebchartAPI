@@ -170,13 +170,12 @@ async def build_pyramid_endpoint(
     req: PyramidBuildRequest,
     background_tasks: BackgroundTasks,
 ):
-    """Build a multi-resolution overview pyramid for an x column.
+    """x 컬럼 하나에 대한 다중 해상도 집계 피라미드를 백그라운드에서 만든다.
 
-    Runs in the background; poll GET /{dataset_id}/pyramids for completion.
-    Pyramids let zoomed-out renders of huge datasets read a small
-    pre-aggregated file instead of scanning the full base data.
+    완료 여부는 GET /{dataset_id}/pyramids로 확인한다. 피라미드가 있으면 줌아웃 화면을
+    원본 전체를 읽지 않고 미리 집계한 레벨에서 정확하게 그린다.
     """
-    from webchart.services.data.pyramid import build_pyramid
+    from webchart.application.pyramids import build_pyramid
 
     try:
         access.get_dataset_meta(dataset_id)  # 404 if missing
@@ -185,9 +184,7 @@ async def build_pyramid_endpoint(
 
     async def _build() -> None:
         try:
-            await run_in_thread(
-                build_pyramid, dataset_id, req.x_column, req.columns, req.method
-            )
+            await run_in_thread(build_pyramid, dataset_id, req.x_column, req.columns)
             logger.info(f"Pyramid built for {dataset_id}/{req.x_column}")
         except Exception as e:
             logger.error(f"Pyramid build failed for {dataset_id}/{req.x_column}: {e}")

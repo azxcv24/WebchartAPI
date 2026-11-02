@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
@@ -30,10 +31,12 @@ class Settings(BaseSettings):
     connector_timeout: int = 300  # seconds, per remote download/query
     clickhouse_max_rows: int = 10_000_000  # cap on rows pulled from a query
 
-    # Multi-resolution pyramid (pre-aggregated overview levels)
-    pyramid_points_per_tile: int = 512  # points each tile targets
-    pyramid_max_points: int = 2_000_000  # cap on rows in the finest level
-    pyramid_max_level: int = 20  # hard cap on pyramid depth
+    # 다중 해상도 피라미드 (계획 문서 2.2, 2.8)
+    pyramid_max_level: int = 24  # 레벨 상한. 2^24 ≈ 1,670만 버킷
+    # 피라미드 하나(모든 레벨 합)의 디스크·메모리 상한. 최대 레벨을 이 예산으로 정한다.
+    pyramid_max_bytes: int = 4 * 1024**3
+    # 정적 렌더에서 원본을 직접 집계(정확)할지 판단하는 행 수 상한. 넘으면 피라미드 근사를 쓴다.
+    exact_raw_row_budget: int = 20_000_000
 
     # SSRF protection for HTTP/S3 connectors. When True (default), connectors
     # refuse hosts that resolve to private/loopback/link-local addresses.
@@ -46,7 +49,6 @@ class Settings(BaseSettings):
     tile_size: int = 512
     default_chart_width: int = 1200
     default_chart_height: int = 600
-    max_downsample_points: int = 4800  # 2 * default width
 
     # Cache TTL (seconds)
     tile_cache_ttl: int = 3600
@@ -70,6 +72,15 @@ class Settings(BaseSettings):
     # pair with a sticky-session LB or swap in a Redis-backed limiter.
     rate_limit_per_minute: int = 120
     rate_limit_enabled: bool = True
+
+
+    @field_validator("tile_size")
+    @classmethod
+    def _tile_size_is_power_of_two(cls, value: int) -> int:
+        # 타일 픽셀 열 = 피라미드 버킷이 되려면 2의 거듭제곱이어야 한다 (계획 문서 2.2)
+        if value <= 0 or value & (value - 1):
+            raise ValueError(f"tile_size는 2의 거듭제곱이어야 한다: {value}")
+        return value
 
 
 settings = Settings()

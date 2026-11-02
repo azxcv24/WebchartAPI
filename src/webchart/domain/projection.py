@@ -90,7 +90,11 @@ def m4_polyline(window: SeriesWindow) -> Polyline:
     keep[:, 4] = breaks_after
     x = np.column_stack(columns_x)[keep]
     y = np.column_stack(columns_y)[keep]
-    return Polyline(x, y)
+    # 점이 하나뿐인 버킷은 first=min=max=last라 같은 점이 4번 나온다. 연속 중복은 버린다
+    # (같은 점을 다시 그려도 모양은 같으므로 그림에 영향이 없다).
+    is_repeat = np.zeros(len(x), dtype=bool)
+    is_repeat[1:] = (x[1:] == x[:-1]) & (y[1:] == y[:-1])
+    return Polyline(x[~is_repeat], y[~is_repeat])
 
 
 def _breaks_between(stats: BucketStats, filled: IntArray) -> npt.NDArray[np.bool_]:

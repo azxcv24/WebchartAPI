@@ -4,6 +4,7 @@
 - 단일 샘플 스파이크: 다운샘플링이 피크를 버리면 바로 보인다.
 - 시리즈마다 다른 위치의 스파이크: 첫 시리즈만 보고 점을 고르는 버그(D2)를 드러낸다.
 - 불규칙한 x 간격: 행 개수 기준 버킷과 픽셀 경계가 어긋나는 문제(D4)를 드러낸다.
+- 결측 구간(y = NaN 연속): 결측을 선으로 이어 숨기는지(P5) 드러낸다.
 
 같은 명세(seed 포함)는 항상 같은 데이터를 만든다. 대용량 벤치마크를 위해
 청크 단위로도 생성할 수 있다 (`iter_chunks`).
@@ -39,6 +40,8 @@ class SyntheticSpec:
         spike_height: 스파이크 높이. 짝수 시리즈는 +, 홀수 시리즈는 - 방향
         time_axis: True면 x가 datetime64[ns] (TIME_ORIGIN부터 평균 1초 간격)
         irregular_x: True면 x 간격이 평균 1인 지수분포 (불규칙 샘플링)
+        gaps_per_series: 시리즈마다 넣을 결측 구간 수
+        gap_rows: 결측 구간 하나의 길이 (행)
         seed: 난수 시드
     """
 
@@ -48,6 +51,8 @@ class SyntheticSpec:
     spike_height: float = 50.0
     time_axis: bool = False
     irregular_x: bool = False
+    gaps_per_series: int = 0
+    gap_rows: int = 50
     seed: int = 0
 
     @property
@@ -70,11 +75,22 @@ def spike_positions(spec: SyntheticSpec) -> dict[str, np.ndarray]:
     }
 
 
+def gap_starts(spec: SyntheticSpec) -> dict[str, np.ndarray]:
+    """시리즈별 결측 구간 시작 행 (오름차순). 구간은 [시작, 시작 + gap_rows)."""
+    rng = np.random.default_rng([spec.seed, 3])
+    last_start = max(spec.rows - spec.gap_rows, 1)
+    return {
+        column: np.sort(rng.choice(last_start, size=spec.gaps_per_series, replace=False))
+        for column in spec.y_columns
+    }
+
+
 def iter_chunks(spec: SyntheticSpec, chunk_rows: int = 1_000_000) -> Iterator[pd.DataFrame]:
     """`chunk_rows`행씩 DataFrame을 만든다. 이어 붙이면 `generate(spec)`과 같다."""
     if chunk_rows <= 0:
         raise ValueError(f"chunk_rows는 양수여야 한다: {chunk_rows}")
     spikes = spike_positions(spec)
+    gaps = gap_starts(spec)
     x_offset = 0.0  # 불규칙 간격에서 다음 청크가 이어받을 x 시작값
 
     for chunk_index, row_start in enumerate(range(0, spec.rows, chunk_rows)):
@@ -96,6 +112,10 @@ def iter_chunks(spec: SyntheticSpec, chunk_rows: int = 1_000_000) -> Iterator[pd
             signal = BASE_AMPLITUDE * np.sin(2 * np.pi * phase * (i + 3))
             values = signal + rng.normal(0.0, NOISE_STD, size=row_end - row_start)
             _apply_spikes(values, spikes[column], row_start, row_end, spec.spike_height, i)
+            for start in gaps[column]:
+                values[max(start - row_start, 0) : max(start + spec.gap_rows - row_start, 0)] = (
+                    np.nan
+                )
             frame[column] = values
         yield pd.DataFrame(frame)
 
