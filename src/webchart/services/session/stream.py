@@ -11,6 +11,7 @@ from webchart.api.auth import hash_api_key, ws_api_key
 from webchart.application.tiles import plan_frame, render_frame
 from webchart.core.concurrency import run_in_thread
 from webchart.domain.geometry import XRange
+from webchart.domain.y_range import YRange
 from webchart.models.ws_messages import (
     ErrorMessage,
     HoverMessage,
@@ -130,7 +131,7 @@ async def _handle_viewport_change(
     viewport = existing.model_copy(
         update={
             "x_range": msg.x_range,
-            "y_range": plan.y_range.as_tuple(),
+            "y_range": _primary_range(plan.y_ranges),
             "zoom": msg.zoom,
             "dpr": dpr,
         }
@@ -164,7 +165,8 @@ async def _handle_viewport_change(
             x_range=viewport.x_range,
             zoom=viewport.zoom,
             tile_count=len(rendered),
-            y_range=plan.y_range.as_tuple(),
+            y_range=_primary_range(plan.y_ranges),
+            y_ranges={name: r.as_tuple() for name, r in plan.y_ranges.items()},
             exact=all(tile.is_exact for tile in rendered),
         ).model_dump()
     )
@@ -209,3 +211,9 @@ async def _handle_scroll(
         session_id,
         ViewportChangeMessage(x_range=new_x_range, zoom=vp.zoom, dpr=vp.dpr),
     )
+
+
+def _primary_range(y_ranges: dict[str, YRange]) -> tuple[float, float] | None:
+    """호버 좌표 변환에 쓰는 주 y축 범위 (y가 없으면 y2)."""
+    primary = y_ranges.get("y") or y_ranges.get("y2")
+    return primary.as_tuple() if primary is not None else None

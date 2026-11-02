@@ -9,15 +9,18 @@ import matplotlib
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.figure import Figure
 
+from webchart.application.axes import x_ticks, y_ticks
 from webchart.application.tiles import PipelineTileRenderer, TileRequest, plan_frame
 from webchart.application.windows import lattice_for
 from webchart.config import settings
 from webchart.domain.geometry import TileAddress, XRange
+from webchart.domain.y_range import YRange
 from webchart.models.chart import AxisConfig, ChartSpec, ChartType
-from webchart.models.dataset import DatasetMeta
+from webchart.models.dataset import ColumnInfo, DatasetMeta
 from webchart.services.ingest.upload import convert_to_parquet
-from webchart.services.render.matplotlib_renderer import MatplotlibRenderer, raw_series_lines
+from webchart.services.render.matplotlib_renderer import AxisTicks, MatplotlibRenderer, raw_drawings
 from webchart.testing.raster import (
     RasterDiff,
     compare_envelopes,
@@ -89,7 +92,7 @@ async def render_pipeline_strip(
     tile_images = []
     for index in tiles or range(lattice.tile_count(zoom)):
         tile = TileAddress(zoom, index)
-        request = TileRequest(meta, spec, plan.lattice, tile, dpr, plan.y_range)
+        request = TileRequest(meta, spec, plan.lattice, tile, dpr, plan.y_ranges)
         tile_images.append(decode_png((await renderer.render(request)).image))
     return stitch_horizontally(tile_images)
 
@@ -102,12 +105,33 @@ def render_reference_strip(
     집계 없이 모든 행을 그리고, y축은 matplotlib 자동 스케일에 맡긴다(구간 밖 행 포함 전체
     데이터 기준). 파이프라인 코드(집계, y범위 정책)를 거치지 않아야 정답으로서 독립적이다.
     """
-    lines = raw_series_lines(spec, frame, spec.y_columns)
     with matplotlib.rc_context({"path.simplify": False}):
         png = MatplotlibRenderer().render_raster(
-            lines, spec.chart_type, x_range, None, width_px, height_px, dpr=dpr
+            raw_drawings(spec, frame), x_range, None, width_px, height_px, dpr=dpr
         )
     return decode_png(png)
+
+
+def render_reference_chart(spec: ChartSpec, frame: pd.DataFrame, x_info: ColumnInfo) -> bytes:
+    """정적 렌더의 정답: 원본 전체를 matplotlib 자동 스케일로 그린 완성 차트.
+
+    눈금만 서버 눈금 서비스로 붙인다 (matplotlib 기본 눈금과 라벨이 달라 그림 크기가
+    달라지는 것을 막기 위해서다). 축 범위는 matplotlib이 원본으로 정한 값을 읽어 쓴다.
+    """
+    painter = MatplotlibRenderer()
+    drawings = raw_drawings(spec, frame)
+    probe = Figure(figsize=(spec.width / 100, spec.height / 100))
+    probe_axes = probe.add_subplot(111)
+    for drawing in drawings:
+        probe_axes.plot(drawing.shape.x, drawing.shape.y)
+    if spec.x_axis.range is not None:
+        probe_axes.set_xlim(*spec.x_axis.range)
+    view = XRange(*probe_axes.get_xlim())
+    y_range = YRange(*probe_axes.get_ylim())
+    width_px, height_px = painter.plot_area_px(spec)
+    ticks = AxisTicks(x=x_ticks(spec, x_info, view, width_px), y={"y": y_ticks(y_range, height_px)})
+    with matplotlib.rc_context({"path.simplify": False}):
+        return painter.render_chart(spec, drawings, None, None, ticks)
 
 
 async def diff_tiles_against_reference(

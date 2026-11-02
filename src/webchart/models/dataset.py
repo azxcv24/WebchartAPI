@@ -25,9 +25,18 @@ class ColumnKind(str, Enum):
 
 # kind 필드가 없던 이전 meta.json의 dtype 문자열을 분류할 때 쓴다.
 _LEGACY_NUMERIC_DTYPES = {
-    "int8", "int16", "int32", "int64",
-    "uint8", "uint16", "uint32", "uint64",
-    "float16", "float32", "float64", "double",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
+    "float16",
+    "float32",
+    "float64",
+    "double",
 }
 _LEGACY_TIME_DTYPES = {"datetime", "date"}
 
@@ -95,6 +104,10 @@ class PyramidInfo(BaseModel):
     data_version: str = ""
     domain_start: float | None = None
     domain_end: float | None = None
+    # 2D 밀도 레벨 (scatter, heatmap). None이면 없음
+    density_max_level: int | None = None
+    density_rows: int = 0
+    density_y_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)
     size_bytes: int = 0
     built_at: datetime = Field(default_factory=_utcnow)
 

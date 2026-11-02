@@ -97,7 +97,7 @@ def run(rows: int, series: int, chunk_rows: int) -> list[StepResult]:
         lattice = lattice_for(meta, X_COLUMN, settings.tile_size)
         tile = TileAddress(zoom, lattice.tile_count(zoom) // 2)
         plan = plan_frame(meta, spec, lattice.tile_range(tile), zoom, prefetch_radius=0)
-        request = TileRequest(meta, spec, plan.lattice, tile, 1, plan.y_range)
+        request = TileRequest(meta, spec, plan.lattice, tile, 1, plan.y_ranges)
         rendered = asyncio.run(PipelineTileRenderer().render(request))
         return rendered.image, rendered.source
 

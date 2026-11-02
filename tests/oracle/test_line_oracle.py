@@ -4,7 +4,6 @@
 알려진 버그로 아직 실패하는 경우는 `known_bug`로 표시한다 (지금은 없다).
 """
 
-import matplotlib
 import numpy as np
 import pandas as pd
 import pytest
@@ -25,6 +24,7 @@ from .harness import (
     diff_tiles_against_reference,
     ingest,
     line_spec,
+    render_reference_chart,
 )
 
 # 타일 하나(512px)보다 행이 적어 집계가 일어나지 않는 데이터
@@ -188,9 +188,8 @@ async def test_time_axis_pyramid_tiles_match_reference():
 def _static_diff(client, frame: pd.DataFrame, spec) -> tuple:
     response = client.post("/api/v1/charts/render", json=spec.model_dump(mode="json"))
     assert response.status_code == 200, response.text
-    with matplotlib.rc_context({"path.simplify": False}):
-        expected_png = MatplotlibRenderer().render(spec, frame)
-    expected = ink_mask(decode_png(expected_png))
+    x_info = next(c for c in get_dataset_meta(spec.dataset_id).columns if c.name == X_COLUMN)
+    expected = ink_mask(decode_png(render_reference_chart(spec, frame, x_info)))
     actual = ink_mask(decode_png(response.content))
     assert expected.shape == actual.shape, "축 라벨 폭이 달라 그림 크기부터 다르다"
     return compare_envelopes(expected, actual, TOLERANCE_PX, STROKE_REACH_PX), response.headers

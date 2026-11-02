@@ -207,6 +207,22 @@ class RawStore:
             for series in y_columns
         }
 
+    def scan(
+        self, x_column: str, y_columns: list[str], x_range: XRange | None
+    ) -> Iterator[tuple[FloatArray, dict[str, FloatArray]]]:
+        """범위와 겹치는 로우그룹을 하나씩 읽어 (x, {컬럼: 값})을 낸다 (정규 좌표, 결측 = NaN).
+
+        행을 범위로 거르지 않는다 (경계 로우그룹에는 범위 밖 행이 섞여 있다). 메모리는
+        로우그룹 하나 크기다. 밀도 격자처럼 행을 직접 세는 집계가 쓴다.
+        """
+        zone_map = self.zone_map(x_column)
+        groups = zone_map.overlapping(x_range) if x_range else np.arange(len(zone_map))
+        columns = list(dict.fromkeys([x_column, *y_columns]))
+        for group in groups:
+            table = self._read_groups(zone_map, np.array([group]), columns)
+            x = canonical_from_arrow(table.column(x_column))
+            yield x, {name: canonical_from_arrow(table.column(name)) for name in y_columns}
+
     def iter_row_groups(self, columns: list[str]) -> Iterator[pa.Table]:
         """모든 로우그룹을 저장 순서대로 하나씩 읽는다 (피라미드 빌드용, 메모리 = 로우그룹 1개)."""
         for path in self._files:

@@ -5,9 +5,10 @@ import logging
 from webchart.application.windows import lattice_for, pyramid_dir
 from webchart.config import settings
 from webchart.core.errors import DatasetProcessingError
+from webchart.domain.y_range import YRange
+from webchart.infrastructure.pyramid_store import DensityPlan, choose_max_level
 from webchart.infrastructure.pyramid_store import build_pyramid as build_levels
-from webchart.infrastructure.pyramid_store import choose_max_level
-from webchart.models.dataset import PYRAMID_FORMAT_VERSION, ColumnKind, PyramidInfo
+from webchart.models.dataset import PYRAMID_FORMAT_VERSION, ColumnKind, DatasetMeta, PyramidInfo
 from webchart.services.data.access import get_dataset_meta, raw_store, save_dataset_meta
 
 logger = logging.getLogger("webchart.application.pyramids")
@@ -38,8 +39,15 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
     max_level = choose_max_level(
         meta.row_count, len(y_columns), settings.pyramid_max_level, settings.pyramid_max_bytes
     )
+    density = _density_plan(meta, y_columns, max_level)
     size_bytes = build_levels(
-        raw_store(meta), pyramid_dir(dataset_id, x_column), x_column, y_columns, domain, max_level
+        raw_store(meta),
+        pyramid_dir(dataset_id, x_column),
+        x_column,
+        y_columns,
+        domain,
+        max_level,
+        density,
     )
     info = PyramidInfo(
         version=PYRAMID_FORMAT_VERSION,
@@ -49,6 +57,9 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
         data_version=meta.data_version,
         domain_start=domain.start,
         domain_end=domain.end,
+        density_max_level=density.max_level if density else None,
+        density_rows=density.rows if density else 0,
+        density_y_ranges=density.y_ranges if density else {},
         size_bytes=size_bytes,
     )
 
@@ -60,3 +71,21 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
         f"피라미드 빌드: {dataset_id}/{x_column} L0..L{max_level}, {size_bytes / 1e6:.1f} MB"
     )
     return info
+
+
+def _density_plan(meta: DatasetMeta, y_columns: list[str], max_level: int) -> DensityPlan | None:
+    """밀도 레벨 명세. y 범위는 GLOBAL 정책과 같은 전역 자동 범위다 (통계가 없는 컬럼은 뺀다)."""
+    y_ranges = {}
+    for column in meta.columns:
+        if column.name in y_columns and column.min_numeric is not None:
+            assert column.max_numeric is not None
+            y_ranges[column.name] = YRange.autoscaled(
+                column.min_numeric, column.max_numeric
+            ).as_tuple()
+    if not y_ranges:
+        return None
+    return DensityPlan(
+        max_level=min(max_level, settings.density_max_level),
+        rows=settings.density_rows,
+        y_ranges=y_ranges,
+    )

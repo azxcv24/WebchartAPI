@@ -60,7 +60,8 @@ class ViewportAckMessage(BaseModel):
     x_range: tuple[float, float]
     zoom: int
     tile_count: int
-    y_range: tuple[float, float] | None = None  # 이 프레임의 모든 타일이 공유하는 y범위
+    y_range: tuple[float, float] | None = None  # 주 y축 범위 (v1 호환)
+    y_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)  # 축별 공유 y범위
     exact: bool = True
 
 

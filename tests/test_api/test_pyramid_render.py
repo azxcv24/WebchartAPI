@@ -52,7 +52,7 @@ async def _render_tile(dataset_id: str, zoom: int):
     lattice = lattice_for(meta, "x", settings.tile_size)
     first_tile = lattice.tile_range(TileAddress(zoom, 0))
     plan = plan_frame(meta, spec, first_tile, zoom, prefetch_radius=0)
-    request = TileRequest(meta, spec, plan.lattice, TileAddress(zoom, 0), 1, plan.y_range)
+    request = TileRequest(meta, spec, plan.lattice, TileAddress(zoom, 0), 1, plan.y_ranges)
     return await PipelineTileRenderer().render(request)
 
 

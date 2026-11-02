@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     pyramid_max_level: int = 24  # 레벨 상한. 2^24 ≈ 1,670만 버킷
     # 피라미드 하나(모든 레벨 합)의 디스크·메모리 상한. 최대 레벨을 이 예산으로 정한다.
     pyramid_max_bytes: int = 4 * 1024**3
+    # 2D 밀도 피라미드 (scatter, heatmap): x 레벨 상한과 y 행 수.
+    # 행 수는 타일 높이(tile_size × dpr 최대 4)의 배수여야 모든 dpr에서 정확하다.
+    density_max_level: int = 12
+    density_rows: int = 2048
     # 정적 렌더에서 원본을 직접 집계(정확)할지 판단하는 행 수 상한. 넘으면 피라미드 근사를 쓴다.
     exact_raw_row_budget: int = 20_000_000
 
@@ -72,7 +76,6 @@ class Settings(BaseSettings):
     # pair with a sticky-session LB or swap in a Redis-backed limiter.
     rate_limit_per_minute: int = 120
     rate_limit_enabled: bool = True
-
 
     @field_validator("tile_size")
     @classmethod

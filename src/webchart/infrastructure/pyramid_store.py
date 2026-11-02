@@ -31,7 +31,7 @@ from webchart.domain.bucket_stats import (
     merge_into,
 )
 from webchart.domain.geometry import BucketGrid, PixelLattice, XRange
-from webchart.domain.projection import SeriesWindow
+from webchart.domain.projection import DensityGrid, SeriesWindow, add_points, empty_density
 from webchart.infrastructure.raw_store import RawStore
 from webchart.models.dataset import PyramidInfo
 from webchart.services.data.x_domain import canonical_from_arrow
@@ -75,6 +75,20 @@ def choose_max_level(row_count: int, series_count: int, max_level: int, max_byte
     return max(0, min(max_level, by_budget, by_rows))
 
 
+@dataclass(frozen=True, slots=True)
+class DensityPlan:
+    """2D 밀도 피라미드 명세 (scatter, heatmap, 계획 문서 2.6).
+
+    레벨 L은 x를 2^L 열, y를 `rows`행으로 나눈 점 개수 격자다. y 범위는 시리즈마다
+    전역 자동 범위(GLOBAL 정책의 y범위와 같다)라, 그 범위로 그리는 타일만 정확히 쓸 수 있다.
+    rows가 타일 높이(px · dpr)의 배수라 행을 묶으면 타일 픽셀 행과 정확히 맞는다.
+    """
+
+    max_level: int
+    rows: int
+    y_ranges: dict[str, tuple[float, float]]
+
+
 def build_pyramid(
     store: RawStore,
     pyramid_dir: Path,
@@ -82,16 +96,30 @@ def build_pyramid(
     y_columns: list[str],
     lattice_domain: XRange,
     max_level: int,
+    density: DensityPlan | None = None,
 ) -> int:
-    """피라미드 레벨 0..max_level을 만들고 전체 파일 크기(바이트)를 반환한다."""
+    """피라미드 레벨 0..max_level(과 밀도 레벨)을 만들고 전체 파일 크기(바이트)를 반환한다."""
     if not y_columns:
         raise DatasetProcessingError("피라미드에는 y 컬럼이 하나 이상 필요하다")
     grid = BucketGrid.covering(lattice_domain, 1 << max_level)
     row_count = np.zeros(grid.bucket_count, dtype=np.int64)
     stats = {series: BucketStats.empty(grid.bucket_count) for series in y_columns}
+    densities = (
+        {
+            series: empty_density(
+                BucketGrid.covering(lattice_domain, 1 << density.max_level),
+                *density.y_ranges[series],
+                rows=density.rows,
+            )
+            for series in density.y_ranges
+        }
+        if density
+        else {}
+    )
 
     for batch in store.iter_row_groups([x_column, *y_columns]):
         _accumulate(batch, x_column, y_columns, grid, row_count, stats)
+        _accumulate_density(batch, x_column, densities)
 
     if pyramid_dir.exists():
         shutil.rmtree(pyramid_dir)
@@ -103,7 +131,34 @@ def build_pyramid(
         if level > 0:
             row_count = row_count.reshape(-1, 2).sum(axis=1)
             stats = {series: level_stats.merge_pairs() for series, level_stats in stats.items()}
+
+    # 밀도: counts[행, 열] → 열 우선(열마다 행 rows개가 연속)으로 저장해 x 구간을 연속으로 자른다
+    columns_major = {series: d.counts.T.copy() for series, d in densities.items()}
+    for level in range(density.max_level if density else -1, -1, -1):
+        table = pa.table(
+            {f"{series}:density": counts.reshape(-1).astype(np.uint32)
+             for series, counts in columns_major.items()}
+        )  # fmt: skip
+        total_bytes += _write_table(density_level_path(pyramid_dir, level), table)
+        if level > 0:
+            columns_major = {
+                series: counts.reshape(-1, 2, counts.shape[1]).sum(axis=1)
+                for series, counts in columns_major.items()
+            }
     return total_bytes
+
+
+def density_level_path(pyramid_dir: Path, level: int) -> Path:
+    return pyramid_dir / f"density_L{level}.arrow"
+
+
+def _accumulate_density(batch: pa.Table, x_column: str, densities: dict[str, DensityGrid]) -> None:
+    if not densities:
+        return
+    x = canonical_from_arrow(batch.column(x_column))
+    for series, density in densities.items():
+        y = canonical_from_arrow(batch.column(series))
+        add_points(density, x, y)
 
 
 def _accumulate(
@@ -140,7 +195,10 @@ def _write_level(path: Path, row_count: IntArray, stats: dict[str, BucketStats])
     for series, level_stats in stats.items():
         for field in _STAT_FIELDS:
             columns[stat_column(series, field)] = getattr(level_stats, field)
-    table = pa.table(columns)
+    return _write_table(path, pa.table(columns))
+
+
+def _write_table(path: Path, table: pa.Table) -> int:
     with pa.OSFile(str(path), "wb") as sink, pa.ipc.new_file(sink, table.schema) as writer:
         writer.write_table(table)
     return path.stat().st_size
@@ -192,6 +250,63 @@ class PyramidReader:
         table = _open_level_table(level_path(self._dir, level))
         return PyramidLevel(level, self.lattice.level_grid(level), table)
 
+    def has_density(self, series: str) -> bool:
+        return self.info.density_max_level is not None and series in self.info.density_y_ranges
+
+    def density(
+        self, level: int, series: str, grid: BucketGrid, y_low: float, y_high: float, rows: int
+    ) -> tuple[DensityGrid, bool]:
+        """밀도 레벨을 요청 격자(열 grid × 행 rows, y [y_low, y_high])로 다시 묶는다.
+
+        반환: (밀도 격자, 정확 여부). 열 경계가 레벨 경계와 맞고, y범위가 피라미드와 같고,
+        피라미드 행 수가 rows의 배수이면 정확하다. 아니면 셀 시작 위치 기준으로 배정하는
+        근사다 (경계에 걸친 셀 하나만큼 오차).
+        """
+        info = self.info
+        assert info.density_max_level is not None
+        level_grid = self.lattice.level_grid(level)
+        stored_low, stored_high = info.density_y_ranges[series]
+        stored_rows = info.density_rows
+        values = (
+            _open_level_table(density_level_path(self._dir, level))
+            .column(f"{series}:density")
+            .chunk(0)
+            .to_numpy(zero_copy_only=True)
+        )
+
+        first = int(
+            np.clip(level_grid.index_of(np.array([grid.origin]))[0], 0, level_grid.bucket_count)
+        )
+        stop = int(
+            np.clip(level_grid.index_of(np.array([grid.end]))[0] + 1, 0, level_grid.bucket_count)
+        )
+        cells = values[first * stored_rows : stop * stored_rows].reshape(-1, stored_rows)
+
+        result = empty_density(grid, y_low, y_high, rows)
+        if len(cells):
+            # 셀 중심으로 배정한다. 시작 좌표는 경계에 딱 걸려 부동소수 반올림으로 앞 칸에
+            # 들어갈 수 있지만, 중심은 경계에서 반 칸 떨어져 있어 정렬된 경우 항상 정확하다.
+            cell_x = level_grid.origin + (np.arange(first, stop) + 0.5) * level_grid.bucket_width
+            column = grid.index_of(cell_x)
+            valid_column = (column >= 0) & (column < grid.bucket_count)
+            row_height = (stored_high - stored_low) / stored_rows
+            row = result.row_index_of(stored_low + (np.arange(stored_rows) + 0.5) * row_height)
+            valid_row = (row >= 0) & (row < rows)
+            target = row[None, valid_row] * grid.bucket_count + column[valid_column, None]
+            flat = np.bincount(
+                target.reshape(-1),
+                weights=cells[valid_column][:, valid_row].reshape(-1).astype(np.float64),
+                minlength=result.counts.size,
+            )
+            result.counts.reshape(-1)[:] = np.rint(flat).astype(np.int64)
+
+        is_exact = (
+            grid.alignment_ratio(level_grid) is not None
+            and (stored_low, stored_high) == (y_low, y_high)
+            and stored_rows % rows == 0
+        )
+        return result, is_exact
+
     def window(self, level: PyramidLevel, series: str, first: int, count: int) -> SeriesWindow:
         """레벨의 버킷 `[first, first + count)`를 그대로 격자로 쓰는 창 (타일용, 정확)."""
         grid = level.grid.sub_grid(first, count)
@@ -206,7 +321,7 @@ class PyramidReader:
     def regrouped_window(self, level: PyramidLevel, series: str, grid: BucketGrid) -> SeriesWindow:
         """레벨 버킷을 임의의 격자(픽셀 열)로 다시 묶은 창 (정적 렌더용).
 
-        레벨 버킷 하나는 시작 x가 속한 픽셀 열로 간다. 두 격자의 경계가 맞지 않으면 경계에
+        레벨 버킷 하나는 중심 x가 속한 픽셀 열로 간다. 두 격자의 경계가 맞지 않으면 경계에
         걸친 버킷 하나만큼 오차가 생길 수 있다 (호출자가 exact=false로 표시한다).
         min/max 점은 실제 x로 그리므로 위치 오차는 없다.
         """
@@ -215,11 +330,19 @@ class PyramidReader:
         stop = int(np.clip(level.grid.index_of(np.array([grid.end]))[0] + 1, 0, bucket_count))
         regrouped = BucketStats.empty(grid.bucket_count)
         if stop > first:
-            starts_x = level.grid.origin + np.arange(first, stop) * level.grid.bucket_width
-            column = np.clip(grid.index_of(starts_x), 0, grid.bucket_count - 1)
-            group_starts = np.flatnonzero(np.r_[True, column[1:] != column[:-1]])
-            merged = level.stats(series, slice(first, stop)).regroup(group_starts)
-            merge_into(regrouped, column[group_starts], merged)
+            # 버킷 중심으로 배정한다 (density와 같은 이유: 경계 반올림 방지)
+            centers_x = level.grid.origin + (np.arange(first, stop) + 0.5) * level.grid.bucket_width
+            column = grid.index_of(centers_x)
+            # 중심이 격자 밖인 버킷(양 끝에 걸친 버킷)은 이웃 열에 속하므로 뺀다
+            inside = np.flatnonzero((column >= 0) & (column < grid.bucket_count))
+            if len(inside):
+                low, high = int(inside[0]), int(inside[-1]) + 1
+                column = column[low:high]
+                group_starts = np.flatnonzero(np.r_[True, column[1:] != column[:-1]])
+                stats = level.stats(series, slice(first + low, first + high))
+                merge_into(regrouped, column[group_starts], stats.regroup(group_starts))
+                first, stop = first + low, first + high
+        # 이웃은 실제로 쓴 버킷의 바깥에서 찾는다 (뺀 양 끝 버킷이 이웃이 될 수 있다)
         lead, trail = _neighbor_buckets(level, first, stop)
         return SeriesWindow(
             grid=grid,
