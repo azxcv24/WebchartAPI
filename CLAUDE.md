@@ -8,8 +8,8 @@ WebchartAPI는 대용량 데이터(수백 GB)를 서버사이드에서 차트로
 
 - **Language**: Python 3.11+
 - **Framework**: FastAPI (async)
-- **Data Processing**: Dask (out-of-core), Apache Arrow (in-memory), Polars
-- **Chart Rendering**: Matplotlib (static/tile), Plotly (interactive export)
+- **Data Processing**: pyarrow (범위 읽기), numpy (집계 커널), Dask (인제스트)
+- **Chart Rendering**: Matplotlib Agg (그리기 프로세스 풀), numpy 밀도 래스터
 - **Real-time**: WebSocket (starlette)
 - **Cache**: Redis
 - **Data Format**: Apache Parquet (canonical storage)
@@ -18,39 +18,54 @@ WebchartAPI는 대용량 데이터(수백 GB)를 서버사이드에서 차트로
 ## Project Structure
 
 ```
-src/webchart/           # Main source package
-├── main.py             # FastAPI app factory, lifespan events
-├── config.py           # Pydantic Settings (env-driven)
-├── dependencies.py     # FastAPI DI providers
-├── api/v1/             # HTTP + WebSocket endpoints
-├── models/             # Pydantic request/response schemas
+src/webchart/
+├── main.py, config.py      # 앱 팩토리(lifespan: 렌더 풀·그리기 프로세스 풀·Redis), 설정
+├── api/                    # HTTP·WS 엔드포인트, 인증, /viewer
+├── models/                 # Pydantic API 모델 (ChartSpec v2 레이어+축, WS v2 메시지, DatasetMeta)
+├── domain/                 # 순수 로직, numpy만, mypy --strict
+│   ├── geometry.py         #   XRange, BucketGrid, PixelLattice, TileAddress, ScreenTransform
+│   ├── bucket_stats.py     #   BucketStats 모노이드 + 벡터 커널
+│   ├── projection.py       #   M4, band, bar, candle, 밀도
+│   ├── y_range.py          #   YRange, 정책, matplotlib과 같은 자동 스케일
+│   └── ticks.py            #   수치·시간 눈금
+├── infrastructure/         # raw_store(정렬 Parquet + zone map), pyramid_store(.npy mmap)
+├── application/            # 유스케이스: windows(경로 선택), tiles, static_chart, layers(레지스트리),
+│                           #   y_ranges, density, interaction, pyramids, append, live, axes, chart_registry
 ├── services/
-│   ├── ingest/         # Data ingestion (upload, S3, FTP, SFTP, HTTP, SMB, local)
-│   ├── data/           # Data access, downsampling (LTTB, min-max), transforms
-│   ├── render/         # Chart rendering (static, tile-based, overlay)
-│   └── session/        # Session lifecycle, interaction, WebSocket streaming
-├── cache/              # Redis cache layer
-└── core/               # Errors, logging, concurrency utils
-tests/                  # pytest tests (mirrors src structure)
+│   ├── ingest/             # 커넥터, sorted_layout(x 정렬 저장), time_columns
+│   ├── data/               # access(메타·read_window), x_domain(정규 좌표), downsample(이전 호환 근사)
+│   ├── render/             # matplotlib_renderer, painters(레지스트리)
+│   └── session/            # manager, stream(WS v2)
+├── cache/                  # redis_cache(L2), memory_cache(L1)
+├── core/                   # errors, concurrency(스레드·프로세스 풀), metrics
+├── testing/                # 합성 데이터, 래스터 비교 (오라클용)
+└── web/                    # 레퍼런스 뷰어 (webchart.js, viewer.html)
+tests/oracle/               # 무왜곡 오라클 (원본 전체 렌더와 비교)
 ```
 
 ## Key Architecture Concepts
 
-### Tile-based Rendering
-동적 차트는 웹 지도 타일 서버처럼 데이터 범위를 격자로 분할하여 뷰포트에 보이는 타일만 렌더링. 각 줌 레벨에서 2^N개의 수평 타일로 분할.
+### 픽셀 정렬 집계 (무왜곡의 핵심)
+x 전체를 2^L 등분한 격자(PixelLattice)를 피라미드·타일·정적 렌더가 공유한다. 타일 (z, dpr)의
+픽셀 열 = 레벨 z + log2(tile_size·dpr)의 버킷 1개. 버킷 경계 = 픽셀 경계이므로 M4가 정확하다.
+LTTB 등은 `downsample_algorithm`으로 고를 때만 쓰는 근사다(exact=false).
 
-### Downsampling
-대용량 데이터를 화면 해상도에 맞게 축소. LTTB(라인차트), Min-Max(캔들스틱), Average(바차트) 알고리즘 사용. 타겟 포인트 수 = 2 * 픽셀 너비.
+### 렌더 파이프라인
+plan(application/windows.py: 피라미드 | 원본 | 근사) → fetch → project(application/layers.py
+레지스트리) → paint(services/render/painters.py 레지스트리, 그리기 프로세스 풀) → L1/L2 캐시.
+타일과 정적 렌더가 같은 경로다. 응답에 exact/source를 붙인다.
 
-### WebSocket Protocol
-`/api/v1/ws/{session_id}`로 연결. JSON 메시지(viewport_change, hover, scroll 등)와 바이너리 프레임(타일 이미지)을 혼합 사용.
+### y범위
+한 프레임의 모든 타일은 축(y, y2)별 y범위 하나를 공유한다(캐시 키 포함). 정책: global / viewport / fixed.
 
-### Data Flow
-1. 데이터 수집 → Parquet 변환 (ingest)
-2. Dask로 필요한 파티션만 로드 (data/access)
-3. 다운샘플링 (data/downsample)
-4. 렌더링 (render/)
-5. Redis 캐싱 (cache/)
+### WebSocket Protocol v2
+`/api/v1/ws/{session_id}`. viewport(latest-wins 취소) / hover(원본 값) / select(정확한 구간 통계) /
+ping. 서버 → frame_begin(타일·y범위·눈금) · 바이너리 타일(13바이트 헤더) · frame_end ·
+crosshair · range_stats · data_appended.
+
+### 실시간 추가
+`POST /datasets/{id}/rows` → 새 Parquet 파일 + 피라미드 버킷 in-place merge + 격자 2배 확장 +
+영향받은 타일만 캐시 키 변경(tile epoch) + WS 알림.
 
 ## Common Commands
 
@@ -72,12 +87,12 @@ ruff check src/
 ruff format src/
 ```
 
-## v2 개선 진행 중 — 반드시 먼저 읽을 것
+## v2 (무왜곡 엔진) — 반드시 먼저 읽을 것
 
-`docs/improvement-plan.md`가 현재 개발 방향의 기준 문서다 (무왜곡 픽셀 정렬 집계, Phase 0~4).
+`docs/improvement-plan.md`가 설계 기준 문서다 (Phase 0~4 완료, 진행 기록은 10장).
 - 핵심 목표: 대용량 데이터를 **왜곡 없이** 서버에서 그리고, 브라우저는 DOM 최소(차트당 ≤ 3개), 인터랙션은 WS 스트리밍
-- 무왜곡 = 오라클 테스트(원본 전체 렌더와 픽셀 비교)로 검증되는 계약. 근사 경로는 응답에 `exact=false` 표기
-- 아래 "Downsampling"의 LTTB 기본값은 Phase 1에서 M4(픽셀 열별 first/last/min/max)로 교체 예정
+- 무왜곡 = 오라클 테스트(`tests/oracle/`, 원본 전체 렌더와 비교)로 검증되는 계약. 근사 경로는 응답에 `exact=false` 표기
+- 렌더 경로를 바꾸면 오라클을 반드시 돌린다. 알려진 왜곡은 `tests/oracle/harness.py`의 KNOWN_BUGS(strict xfail)에 등록
 - 코드 컨벤션(이름에 단위, `[start, end)` 범위, 한국어 docstring, 패턴 적용 기준)은 계획 문서 6장을 따른다
 
 ## Conventions
@@ -87,7 +102,7 @@ ruff format src/
 - 비동기 I/O 우선, CPU-bound 작업은 ThreadPoolExecutor 사용
 - 데이터 수집 커넥터는 `IngestBackend` 프로토콜 구현
 - 차트 렌더러는 `ChartRenderer` 프로토콜 구현
-- 캐시 키 형식: `{type}:{dataset_id}:{hash}` (예: `tile:abc123:z3-x4-y2`)
+- 캐시 키 형식: `{type}:{dataset_id}:{...}` (타일: `tile:{dataset}:{data_version}:{그림 해시}:{z}-{i}@{dpr}x:e{세대}`)
 - 에러 응답은 `core/errors.py`의 커스텀 예외 계층 사용
 - 환경 변수 기반 설정 (Pydantic Settings)
 

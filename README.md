@@ -1,476 +1,207 @@
 # WebchartAPI
 
-대용량 데이터(수백 GB)를 서버사이드에서 렌더링하여 차트로 시각화하는 API 서비스.
+수백 GB 데이터를 **왜곡 없이**, 원하는 차트로, API 하나로 어디서든 그리는 서버사이드 차트 엔진.
 
-## Overview
+- **무거운 일은 서버가 한다.** RAM이 큰 서버가 집계와 렌더링을 맡는다.
+- **브라우저는 거의 아무것도 하지 않는다.** 레퍼런스 뷰어의 DOM은 차트당 3개(컨테이너 + 캔버스 2개)다.
+- **인터랙션은 스트리밍이다.** 줌·이동·호버·구간 통계를 WebSocket으로 그때그때 받아 온다.
+- **"왜곡 없음"은 테스트로 강제한다.** 서버가 그린 그림을 원본 전체를 그린 그림과 픽셀 단위로 비교한다(오라클 테스트).
 
-WebchartAPI는 클라이언트가 감당할 수 없는 대규모 데이터셋을 서버에서 처리하고 차트를 렌더링하여 제공합니다. 정적 이미지 차트와 실시간 동적 차트를 모두 지원하며, 동적 차트는 타일 기반 렌더링 + WebSocket 스트리밍으로 클라이언트 부담을 최소화합니다.
-
-### 왜 서버사이드 렌더링인가?
-
-수백 GB 규모의 데이터를 클라이언트에서 직접 처리하는 것은 불가능합니다. WebchartAPI는 대용량 RAM을 가진 서버에서 데이터를 파티션 단위로 읽고, 화면 해상도에 맞게 다운샘플링한 후, 차트 이미지를 렌더링하여 전송합니다. 클라이언트는 이미지를 표시하고 마우스 이벤트만 보내면 되므로 브라우저/모바일에서도 수억 건의 데이터를 탐색할 수 있습니다.
-
-## Architecture
-
-```
-┌──────────────┐     HTTP/WebSocket     ┌──────────────────────┐
-│    Client     │◄─────────────────────►│   FastAPI Gateway     │
-└──────────────┘                        └──────┬───────────────┘
-                                               │
-                         ┌─────────────────────┼─────────────────────┐
-                         │                     │                     │
-                  ┌──────▼──────┐    ┌─────────▼────────┐   ┌───────▼───────┐
-                  │ Data Ingest │    │  Chart Render     │   │ Session &     │
-                  │ Service     │    │  Engine           │   │ Interaction   │
-                  │             │    │  - Static (PNG)   │   │ Manager       │
-                  │ Upload/     │    │  - Tile-based     │   │ - Hover/Click │
-                  │ Remote Pull │    │  - Overlay        │   │ - Pan/Zoom    │
-                  └──────┬──────┘    └─────────┬────────┘   │ - Scroll      │
-                         │                     │            └───────┬───────┘
-                  ┌──────▼─────────────────────▼────────────────────▼───────┐
-                  │              Data Access Layer (Dask + Arrow)           │
-                  └──────┬─────────────────────────────────┬───────────────┘
-                         │                                 │
-                  ┌──────▼──────┐                   ┌──────▼──────┐
-                  │ Data Store  │                   │ Redis Cache │
-                  │ (Parquet)   │                   │ - Tiles     │
-                  │             │                   │ - Queries   │
-                  │ S3/FTP/SFTP │                   │ - Sessions  │
-                  │ HTTP/SMB    │                   └─────────────┘
-                  │ Local FS    │
-                  └─────────────┘
-```
-
-### 핵심 설계 원칙
-
-- **Apache Arrow를 표준 인메모리 포맷으로 사용** — 모든 데이터 소스는 수집 시 Arrow 테이블로 변환되어 제로카피 읽기, 컬럼 단위 접근이 가능
-- **Dask로 아웃오브코어 연산** — 수백 GB 데이터를 RAM에 전부 올리지 않고 파티션 단위로 지연 처리
-- **타일 기반 렌더링** — 웹 지도 타일 서버처럼 뷰포트를 격자로 분할하여 보이는 영역만 렌더링
-- **WebSocket 양방향 스트리밍** — Hover 데이터, 스크롤 이벤트, 타일 전송을 단일 WebSocket으로 처리
-- **Redis 캐싱** — 렌더링된 타일, 다운샘플 결과, 세션 상태를 TTL 기반으로 캐싱
+설계와 진행 기록은 [docs/improvement-plan.md](docs/improvement-plan.md)에 있다.
 
 ---
 
-## Key Features
+## 왜 왜곡이 없는가
 
-### Data Ingestion
-- **파일 업로드**: CSV, Parquet, JSON, Excel, TSV 직접 업로드
-- **원격 데이터 접근**: S3, FTP/SFTP, HTTP/HTTPS, SMB/CIFS, 로컬 파일시스템 (프로토콜별 플러그인 구조)
-- 업로드된 모든 데이터는 자동으로 파티셔닝된 Parquet으로 변환
-- Parquet 메타데이터 기반 자동 스키마 감지 (컬럼 타입, min/max, null count)
+### 픽셀 정렬 집계 (M4)
 
-### Static Chart Rendering
-- 서버에서 완전한 차트 이미지를 렌더링하여 PNG/SVG/WebP로 제공
-- 지원 차트 유형: Line, Bar, Scatter, Heatmap, Candlestick
-- LTTB 다운샘플링으로 수억 건 데이터도 빠르게 렌더링 (타겟 포인트 수 = 화면 너비 x 2)
+선 차트는 **픽셀 열마다 첫 점·최솟값·최댓값·끝 점(M4)** 만 남겨 그린다. 집계 구간(버킷) 경계가 픽셀 경계와 정확히 같으면, 이 네 점으로 그린 그림은 원본 전체로 그린 그림과 같다(Jugel et al., PVLDB 2014). 서버 전체가 이 조건 하나를 지키도록 설계되어 있다.
 
-### Dynamic Interactive Charts
-- **타일 기반 렌더링**: 줌 레벨에 따라 데이터 범위를 2^N개 타일로 분할, 각 타일은 512x512 PNG
-- **WebSocket 스트리밍**: 스크롤/줌 시 필요한 타일만 바이너리 프레임으로 실시간 전송
-- **Hover/Click 데이터 조회**: 픽셀 좌표를 데이터 좌표로 변환 후 가장 가까운 데이터 포인트 반환
-- **프리페치**: 뷰포트 좌우 2타일을 미리 렌더링하여 스크롤 시 즉각 표시
-- **오버레이**: 크로스헤어, 툴팁 등을 투명 PNG로 렌더링하여 타일 위에 합성
+```
+x 전체 [x0, x1) 를 2^L 등분 = 피라미드 레벨 L
+타일 (줌 z, dpr) = 레벨 z + log2(타일 px × dpr) 의 연속 버킷 → 버킷 1개 = 픽셀 열 1개
+```
 
-### Performance
-- **Dask**: 수백 GB 데이터셋을 ~128MB 파티션으로 분할하여 필요한 부분만 읽기
-- **Apache Arrow**: Parquet 파일에서 제로카피 컬럼 접근
-- **Redis 3단 캐시**: 타일 캐시(TTL 1h), 쿼리 캐시(TTL 30m), 세션 캐시(TTL 15m)
-- **렌더 풀**: ThreadPoolExecutor로 Matplotlib 렌더링 병렬 처리 (기본 8 워커)
-- **공유 타일 캐시**: 같은 데이터셋 + 같은 차트 설정을 보는 여러 사용자가 캐시를 공유
+### 하나의 집계 구조: BucketStats
+
+버킷마다 `count, sum, first, last, min(+x), max(+x), 결측 위치`를 저장한다. 두 버킷을 합쳐도(merge) 정확하게 다시 계산되는 모노이드라서 다음이 모두 가능하다.
+
+- 세밀한 레벨을 2개씩 합쳐 상위 레벨을 정확히 만든다(피라미드)
+- 실시간으로 추가된 행을 다시 집계하지 않고 버킷에 더한다
+- 하나의 저장 구조에서 모든 차트를 만든다
+
+| 레이어 | 투영 | 정확성 |
+|---|---|---|
+| line / area | M4 | 원본 래스터와 같음 |
+| band | 픽셀 열별 min~max | 열별 값이 원본과 같음 |
+| bar | 구간별 sum / mean / count / min / max (명시) | 구간 원본 행의 정확한 집계 |
+| candlestick | 구간별 OHLC (가격 컬럼 또는 OHLC 컬럼) | 정확 |
+| scatter / heatmap | 픽셀별 점 개수 (2D 밀도, linear/log/eq_hist) | 개수가 원본과 같음 |
+
+정확하지 않은 경로(예: 원본이 예산보다 커서 피라미드를 픽셀로 다시 묶는 정적 렌더)를 타면 응답 헤더에 `X-Webchart-Exact: false`와 출처(`X-Webchart-Source`)를 붙인다.
 
 ---
 
-## Tech Stack
+## 아키텍처
 
-| Component | Technology |
+```
+api/            HTTP · WebSocket · 인증 · 임베드          ─┐
+application/    유스케이스: 경로 선택, 타일·정적 렌더,       │ 바깥 → 안쪽으로만 의존
+                y범위 정책, 인터랙션, 실시간 추가            │
+domain/         순수 로직 (numpy만): 격자, BucketStats,    ◀┘ mypy --strict
+                투영(M4·막대·캔들·밀도), y범위, 눈금
+infrastructure/ 원본 저장소(zone map), 피라미드 저장소(mmap)
+services/       인제스트 커넥터, matplotlib 페인터, 세션
+```
+
+렌더 파이프라인은 하나다(타일과 정적 렌더가 같은 경로).
+
+```
+plan     격자·레벨·축별 y범위·exact 여부 결정       application/windows.py, y_ranges.py
+fetch    피라미드 레벨 | 원본 범위 집계              infrastructure/pyramid_store.py, raw_store.py
+project  레이어 레지스트리 → 도형                     application/layers.py, domain/projection.py
+paint    도형 레지스트리 → matplotlib (프로세스 풀)   services/render/painters.py
+cache    L1 프로세스 메모리 → L2 Redis (데코레이터)   application/tiles.py
+```
+
+### 저장 구조
+
+| 계층 | 내용 |
 |---|---|
-| API Framework | FastAPI (async) |
-| Data Processing | Dask, Apache Arrow, Pandas |
-| Chart Rendering | Matplotlib (Agg backend), Plotly |
-| Real-time Communication | WebSocket (Starlette) |
-| Caching | Redis (hiredis) |
-| Data Format | Apache Parquet |
-| Containerization | Docker + docker-compose |
-| Testing | pytest, pytest-asyncio |
-| Linting | Ruff, mypy |
+| 원본 | 축 컬럼으로 **정렬**된 Parquet, 131,072행 로우그룹. 로우그룹별 x 범위(zone map)로 필요한 범위만 읽는다 |
+| 피라미드 | 레벨별 `.npy` 배열을 mmap으로 연다. OS 페이지 캐시가 그대로 메모리 계층이 된다. 실시간 추가는 같은 파일을 쓰기 가능한 mmap으로 고친다 |
+| L1 캐시 | 프로세스 메모리 바이트 상한 LRU (렌더된 타일) |
+| L2 캐시 | Redis (타일, 세션) |
+
+### 경로 선택
+
+1. 피라미드 레벨 경계가 요청 격자와 맞으면 → 피라미드 (정확). 타일은 항상 여기에 해당한다.
+2. 원본 읽기량이 예산(`EXACT_RAW_ROW_BUDGET`) 안이거나 피라미드가 없으면 → 원본을 로우그룹씩 읽어 즉석 집계 (정확, 메모리 = 격자 + 로우그룹 1개)
+3. 그 외 → 피라미드를 픽셀로 다시 묶음 (근사, `exact=false`)
 
 ---
 
-## Project Structure
+## 빠르게 써 보기
 
-```
-WebchartAPI/
-├── pyproject.toml               # 프로젝트 메타데이터, 의존성 관리 (Hatchling)
-├── Dockerfile                   # 프로덕션 컨테이너 빌드
-├── docker-compose.yml           # API + Redis 서비스 구성
-├── CLAUDE.md                    # AI 어시스턴트용 프로젝트 컨텍스트
-│
-├── src/webchart/                # ── 메인 소스 패키지 ──
-│   ├── main.py                  # FastAPI 앱 팩토리, lifespan 이벤트 관리
-│   ├── config.py                # 환경변수 기반 설정 (Pydantic Settings)
-│   ├── dependencies.py          # FastAPI 의존성 주입 프로바이더
-│   │
-│   ├── api/                     # ── HTTP & WebSocket 엔드포인트 레이어 ──
-│   │   ├── router.py            # 전체 라우터 집약 (/api/v1 접두사)
-│   │   ├── middleware.py        # RequestId, Timing 미들웨어
-│   │   └── v1/
-│   │       ├── datasets.py      # 데이터셋 CRUD (업로드, 원격연결, 조회, 삭제)
-│   │       ├── charts.py        # 정적 차트 렌더링 엔드포인트
-│   │       ├── sessions.py      # 인터랙티브 세션 생성/조회/종료
-│   │       └── ws.py            # WebSocket 엔드포인트 (/ws/{session_id})
-│   │
-│   ├── models/                  # ── Pydantic v2 요청/응답 스키마 ──
-│   │   ├── dataset.py           # DatasetMeta, RemoteSourceSpec, ColumnInfo 등
-│   │   ├── chart.py             # ChartSpec, ChartType, AxisConfig, SeriesConfig
-│   │   ├── session.py           # SessionState, ViewportWindow
-│   │   └── ws_messages.py       # WS 프로토콜 메시지 (Hover, Tile, Overlay 등)
-│   │
-│   ├── services/                # ── 비즈니스 로직 레이어 ──
-│   │   │
-│   │   ├── ingest/              # 데이터 수집 서비스
-│   │   │   ├── base.py          # IngestBackend 프로토콜 (인터페이스 정의)
-│   │   │   ├── upload.py        # 파일 업로드 처리 + Parquet 변환
-│   │   │   ├── local.py         # 로컬 파일시스템 커넥터 (file:// 프로토콜)
-│   │   │   ├── registry.py      # URI 스킴 → 백엔드 디스패처
-│   │   │   └── schema_detect.py # Parquet 메타데이터 기반 스키마 자동 감지
-│   │   │
-│   │   ├── data/                # 데이터 접근 서비스
-│   │   │   ├── access.py        # Dask 기반 데이터 읽기 (윈도우, 샘플, 목록)
-│   │   │   ├── downsample.py    # 다운샘플링 알고리즘 (LTTB, MinMax, Average)
-│   │   │   └── transform.py     # 집계, 히스토그램 빈 계산
-│   │   │
-│   │   ├── render/              # 차트 렌더링 서비스
-│   │   │   ├── base.py          # ChartRenderer 프로토콜 (인터페이스 정의)
-│   │   │   ├── matplotlib_renderer.py  # Matplotlib 기반 정적/타일 렌더러
-│   │   │   ├── tile_renderer.py # 타일 격자 계산, 캐시 연동, 프리페치
-│   │   │   ├── overlay.py       # 크로스헤어 등 투명 오버레이 생성
-│   │   │   └── chart_types/     # (확장용) 차트 유형별 드로잉 로직
-│   │   │
-│   │   └── session/             # 세션 관리 서비스
-│   │       ├── manager.py       # 세션 생성/조회/뷰포트 업데이트/종료
-│   │       ├── interaction.py   # Hover 좌표 해석, 최근접 데이터 포인트 탐색
-│   │       └── stream.py        # WebSocket 메시지 디스패치, 타일 스트리밍
-│   │
-│   ├── cache/                   # ── Redis 캐시 레이어 ──
-│   │   ├── redis_cache.py       # 타일/쿼리/세션 캐시 CRUD, 커넥션 풀 관리
-│   │   └── keys.py              # 캐시 키 생성 유틸리티
-│   │
-│   └── core/                    # ── 공통 유틸리티 ──
-│       ├── errors.py            # 에러 계층 (WebchartError → HTTPException 변환)
-│       ├── logging.py           # 구조화 로깅 설정
-│       ├── concurrency.py       # ThreadPoolExecutor 렌더 풀 관리
-│       └── math_utils.py        # 픽셀↔데이터 좌표 변환, 타일 인덱스 계산
-│
-└── tests/                       # ── 테스트 ──
-    ├── conftest.py              # 공유 픽스처 (임시 데이터 디렉토리, 테스트 클라이언트)
-    ├── test_api/
-    │   └── test_health.py       # 헬스체크 엔드포인트 테스트
-    └── test_services/
-        ├── test_downsample.py   # LTTB, MinMax, Average 다운샘플링 테스트
-        └── test_math_utils.py   # 좌표 변환, 타일 인덱스 계산 테스트
-```
-
----
-
-## Module Details
-
-### `main.py` — 앱 팩토리
-
-FastAPI 애플리케이션을 생성하고 lifespan 이벤트로 시작/종료 시 리소스를 관리합니다.
-- 시작: 데이터 디렉토리 생성, 로깅 설정, Ingest 백엔드 등록
-- 종료: 렌더 스레드풀 종료, Redis 커넥션 종료
-- CORS 미들웨어, RequestId/Timing 미들웨어 적용
-
-### `config.py` — 환경변수 설정
-
-`WEBCHART_` 접두사를 가진 환경변수로 모든 설정을 제어합니다.
-
-| 환경변수 | 기본값 | 설명 |
-|---|---|---|
-| `WEBCHART_REDIS_URL` | `redis://localhost:6379/0` | Redis 연결 URL |
-| `WEBCHART_DATA_DIR` | `/data/webchart` | Parquet 데이터 저장 경로 |
-| `WEBCHART_MAX_UPLOAD_SIZE` | `10737418240` (10GB) | 최대 업로드 크기 |
-| `WEBCHART_RENDER_POOL_SIZE` | `8` | 동시 렌더링 스레드 수 |
-| `WEBCHART_TILE_SIZE` | `512` | 타일 픽셀 크기 |
-| `WEBCHART_TILE_CACHE_TTL` | `3600` | 타일 캐시 TTL (초) |
-| `WEBCHART_QUERY_CACHE_TTL` | `1800` | 쿼리 캐시 TTL (초) |
-| `WEBCHART_SESSION_TTL` | `900` | 세션 TTL (초) |
-
-### `services/ingest/` — 데이터 수집
-
-```
-[사용자 업로드/원격 URI]
-        │
-        ▼
-  IngestBackend.ingest_to_parquet()
-        │
-        ▼
-  [청크 단위 읽기 → Dask DataFrame]
-        │
-        ▼
-  [~128MB 파티션으로 분할 → Parquet 저장]
-        │
-        ▼
-  [schema_detect → 컬럼 타입/통계 추출 → meta.json 저장]
-```
-
-- `base.py`: `IngestBackend` 프로토콜 — `validate_source()`, `ingest_to_parquet()`, `supported_protocols` 인터페이스 정의
-- `upload.py`: 업로드 파일을 64MB 청크로 읽어 임시 저장 후, Dask로 Parquet 변환. CSV/TSV/JSON/Excel/Parquet 지원
-- `local.py`: `file://` 프로토콜 처리. 로컬 파일을 복사 후 Parquet 변환
-- `registry.py`: URI 스킴을 파싱하여 적절한 `IngestBackend` 구현체로 라우팅
-- `schema_detect.py`: Parquet 파일의 row group 메타데이터에서 데이터를 로드하지 않고 컬럼 정보(타입, min/max, null count) 추출
-
-### `services/data/` — 데이터 접근 & 다운샘플링
-
-- `access.py`: Dask를 사용한 데이터 읽기 인터페이스
-  - `read_window()` — x축 범위 필터링으로 뷰포트에 해당하는 데이터만 로드
-  - `read_sample()` — 프리뷰용 랜덤 샘플 추출
-  - `list_datasets()` / `delete_dataset()` — 데이터셋 CRUD
-
-- `downsample.py`: 대용량 데이터를 화면 해상도에 맞게 축소하는 3가지 알고리즘
-  - **LTTB** (Largest Triangle Three Buckets): 라인 차트에 최적. 시각적 형태를 가장 잘 보존. 첫/마지막 포인트를 항상 유지하고 각 버킷에서 삼각형 넓이가 최대인 포인트를 선택
-  - **MinMax**: 캔들스틱/범위 차트에 적합. 각 버킷의 최소/최대값 포인트를 유지하여 데이터 범위를 정확히 표현
-  - **Average**: 바 차트/집계 뷰에 적합. 각 버킷의 평균값을 계산
-
-- `transform.py`: 그룹별 집계, 히스토그램 빈 계산
-
-### `services/render/` — 차트 렌더링
-
-- `matplotlib_renderer.py`: Matplotlib Agg 백엔드 기반 렌더러
-  - `render()` — 전체 차트 이미지 생성 (제목, 축, 범례 포함)
-  - `render_tile()` — 축/범례 없이 데이터만 그린 타일 이미지 생성
-  - Line, Bar, Scatter, Heatmap, Candlestick 차트 유형별 드로잉 로직
-
-- `tile_renderer.py`: 타일 기반 동적 차트의 핵심 모듈
-  - 데이터 범위를 줌 레벨에 따라 2^N개 타일로 분할
-  - 타일별로 해당 범위의 데이터만 읽고 → 다운샘플링 → Matplotlib 렌더 → Redis 캐싱
-  - `render_visible_tiles()`: 뷰포트 + 좌우 프리페치 타일까지 한번에 렌더
-
-- `overlay.py`: 크로스헤어 등 인터랙션 표시용 투명 PNG 오버레이 생성
-
-### `services/session/` — 세션 & 인터랙션
-
-- `manager.py`: 세션 생명주기 관리. Redis에 세션 상태 저장, TTL 기반 자동 만료
-- `interaction.py`: Hover 이벤트 처리. 픽셀 좌표 → 데이터 좌표 변환 → 최근접 데이터 포인트 탐색
-- `stream.py`: WebSocket 메시지 디스패처
-  - `viewport_change`: 타일 렌더 + 바이너리 프레임 전송
-  - `hover`: 데이터 포인트 조회 + JSON 응답
-  - `scroll`: 뷰포트 이동 + 새 엣지 타일 전송
-  - `ping`/`pong`: 연결 유지
-
-### `cache/` — Redis 캐시
-
-3단계 캐시 구조:
-
-| 캐시 유형 | 키 패턴 | TTL | 용도 |
-|---|---|---|---|
-| 타일 캐시 | `tile:{dataset_id}:{chart_hash}:z{zoom}:x{x}:y{y}` | 1시간 | 렌더된 PNG 타일 바이트 |
-| 쿼리 캐시 | `query:{dataset_id}:{range_hash}:{algo}:{n}` | 30분 | 다운샘플된 Arrow IPC 바이트 |
-| 세션 캐시 | `session:{session_id}` | 15분 | JSON 세션 상태 |
-
-같은 데이터셋 + 같은 차트 설정을 보는 여러 사용자는 동일한 타일 캐시를 공유합니다.
-
-### `core/` — 공통 유틸리티
-
-- `errors.py`: `WebchartError` 기반 에러 계층. 에러 코드별로 적절한 HTTP 상태코드로 자동 변환
-- `concurrency.py`: `ThreadPoolExecutor` 기반 렌더 풀. Matplotlib는 async-safe하지 않으므로 별도 스레드에서 실행
-- `math_utils.py`: `Viewport` 클래스 (픽셀↔데이터 좌표 양방향 변환), `visible_tile_indices()` (뷰포트에 보이는 타일 인덱스 계산)
-
----
-
-## API Endpoints
-
-### Health
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/health` | 서버 상태 확인 |
-
-### Datasets
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/v1/datasets/upload` | 파일 업로드 (multipart). 백그라운드에서 Parquet 변환 |
-| POST | `/api/v1/datasets/connect` | 원격 데이터 소스 연결 (protocol + URI + credentials) |
-| GET | `/api/v1/datasets` | 전체 데이터셋 목록 조회 |
-| GET | `/api/v1/datasets/{id}` | 데이터셋 메타데이터 조회 (행 수, 크기, 상태) |
-| GET | `/api/v1/datasets/{id}/schema` | 컬럼 스키마 조회 (타입, min/max, null count) |
-| GET | `/api/v1/datasets/{id}/preview?rows=100` | 데이터 미리보기 (최대 1000행) |
-| DELETE | `/api/v1/datasets/{id}` | 데이터셋 및 파일 삭제 |
-
-### Charts
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/v1/charts/render` | 정적 차트 렌더링 → 이미지 바이너리 응답 |
-| POST | `/api/v1/charts/render/info` | 렌더 메타데이터만 반환 (크기, 포맷, 데이터 포인트 수) |
-
-### Sessions (Dynamic Charts)
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/v1/sessions` | 인터랙티브 세션 생성, WebSocket URL 반환 |
-| GET | `/api/v1/sessions/{id}` | 세션 상태 조회 |
-| DELETE | `/api/v1/sessions/{id}` | 세션 종료 |
-| WS | `/api/v1/ws/{session_id}` | WebSocket 연결 |
-
-### WebSocket Protocol
-
-WebSocket 연결 후 JSON 텍스트 프레임과 바이너리 프레임을 혼합 사용합니다.
-
-**Client → Server (JSON)**
-```jsonc
-// 뷰포트 변경 (스크롤, 줌)
-{ "type": "viewport_change", "x_range": [0, 1000], "y_range": [0, 500], "zoom": 3 }
-
-// 마우스 호버
-{ "type": "hover", "pixel_x": 450, "pixel_y": 230 }
-
-// 스크롤 (뷰포트 자동 이동)
-{ "type": "scroll", "direction": "right", "delta": 200 }
-
-// 연결 유지
-{ "type": "ping" }
-```
-
-**Server → Client (JSON)**
-```jsonc
-// 타일 메타데이터 (몇 개의 타일이 전송될지 미리 알려줌)
-{ "type": "tiles_meta", "tiles": [
-    { "tile_id": "3-4-0", "x": 4, "y": 0, "width": 512, "height": 512, "ready": true }
-]}
-
-// 호버 위치의 데이터 값
-{ "type": "hover_data", "data_x": 1234.56, "data_y": 78.9, "series": "price", "label": "x=1234.56" }
-
-// 뷰포트 변경 확인
-{ "type": "viewport_ack", "x_range": [0, 1000], "zoom": 3, "tile_count": 6 }
-
-// 크로스헤어 등 오버레이 이미지
-{ "type": "overlay", "base64_png": "...", "x": 0, "y": 0, "width": 1200, "height": 600 }
-
-// 에러
-{ "type": "error", "code": "SESSION_NOT_FOUND", "message": "..." }
-```
-
-**Server → Client (Binary)**
-```
-타일 이미지: [4바이트 tile_id 길이 (big-endian)][tile_id UTF-8][PNG 바이트]
-```
-
----
-
-## Data Flow
-
-### 정적 차트 렌더링 흐름
-
-```
-POST /api/v1/charts/render
-        │
-        ▼
-  ChartSpec 파싱 (차트 유형, 축, 시리즈 설정)
-        │
-        ▼
-  read_window() — Dask로 x축 범위의 파티션만 로드
-        │
-        ▼
-  downsample() — LTTB로 화면 너비x2 포인트로 축소
-        │                (예: 1200px → 2400 포인트)
-        ▼
-  MatplotlibRenderer.render() — ThreadPool에서 PNG 생성
-        │
-        ▼
-  Response: image/png
-```
-
-### 동적 차트 인터랙션 흐름
-
-```
-POST /api/v1/sessions → { session_id, websocket_url }
-        │
-        ▼
-WS /api/v1/ws/{session_id} 연결
-        │
-        ▼
-Client: viewport_change { x_range, zoom }
-        │
-        ▼
-  visible_tile_indices() — 뷰포트에 보이는 타일 계산
-        │
-        ▼
-  Redis 캐시 확인 (hit → 바로 전송)
-        │
-  캐시 miss인 타일만:
-        │
-        ▼
-  read_window() + downsample() + render_tile()
-        │
-        ▼
-  Redis에 캐싱 + 바이너리 프레임으로 전송
-        │
-        ▼
-Client: hover { pixel_x, pixel_y }
-        │
-        ▼
-  pixel_to_data() 좌표 변환 → 최근접 포인트 탐색
-        │
-        ▼
-  hover_data JSON 응답
-```
-
----
-
-## Development
-
-### Prerequisites
-- Python 3.11+
-- Redis
-- Docker (optional)
-
-### Setup
 ```bash
-# 의존성 설치
 pip install -e ".[dev]"
-
-# Redis 시작
-docker run -d -p 6379:6379 redis:7-alpine
-
-# 개발 서버 실행
-uvicorn webchart.main:app --reload --host 0.0.0.0 --port 8000
-```
-
-### Docker
-```bash
+uvicorn src.webchart.main:app --reload --host 0.0.0.0 --port 8000   # Redis 필요
+# 또는
 docker-compose up -d
-# API: http://localhost:8000
-# Swagger UI: http://localhost:8000/docs
 ```
 
-### Testing
-```bash
-# 전체 테스트
-pytest tests/ -v
+1. 업로드: `POST /api/v1/datasets/upload` (CSV, Parquet, JSON, Excel, TSV)
+2. 피라미드(선택, 큰 데이터): `POST /api/v1/datasets/{id}/pyramid {"x_column": "ts"}`
+3. 브라우저에서 `http://localhost:8000/viewer/`: 드래그 이동 · 휠 줌 · Shift+드래그 구간 통계
 
-# 커버리지 포함
-pytest tests/ --cov=webchart --cov-report=term-missing
+### 차트 명세 (ChartSpec v2)
+
+```jsonc
+{
+  "dataset_id": "…",
+  "x_axis": { "column": "ts", "timezone": "Asia/Seoul" },
+  "layers": [
+    { "kind": "candlestick", "column": "price", "group_px": 16 },
+    { "kind": "line", "column": "ma20", "style": { "color": "#e45" } },
+    { "kind": "bar", "column": "volume", "agg": "sum", "axis": "y2" }
+  ],
+  "axes": { "y": { "label": "가격" }, "y2": { "label": "거래량", "range_policy": "viewport" } },
+  "width": 1200, "height": 600
+}
 ```
 
-### Linting & Type Check
-```bash
-ruff check src/
-ruff format src/
-mypy src/webchart/
-```
+- y범위 정책: `global`(전체 데이터, 캐시 효율 최고) · `viewport`(보이는 구간) · `fixed`(`range` 지정)
+- 이전 형식(`chart_type`, `y_columns`, `series`, `y_axis`)도 그대로 받는다(레이어로 자동 변환).
+- 시간축 눈금은 표시 시간대의 벽시계에 맞춘다: ① `x_axis.timezone` ② 컬럼의 원래 시간대 ③ 시간대 없는 컬럼은 저장된 값 그대로.
 
 ---
 
-## Implementation Status
+## API
 
-| Phase | 내용 | 상태 |
+### 데이터셋
+| Method | Endpoint | 설명 |
 |---|---|---|
-| Phase 1 | Config, FastAPI 앱, 파일 업로드, Dask 데이터 접근, 다운샘플링 | 완료 |
-| Phase 2 | Matplotlib 렌더러, 차트 API, Redis 캐싱 | 완료 |
-| Phase 3 | WebSocket, 타일 렌더러, Hover/Scroll 인터랙션 | 완료 |
-| Phase 4 | 원격 커넥터 (S3/FTP/SFTP/HTTP/SMB), 추가 차트 유형, 인증, 부하 테스트 | 예정 |
+| POST | `/api/v1/datasets/upload` | 파일 업로드. 정렬된 Parquet으로 변환 (백그라운드) |
+| POST | `/api/v1/datasets/connect` | 원격 소스 (S3, HTTP, FTP, SFTP, SMB, ClickHouse, 로컬) |
+| GET | `/api/v1/datasets`, `/{id}`, `/{id}/schema`, `/{id}/preview` | 조회 |
+| POST | `/api/v1/datasets/{id}/pyramid` | 피라미드 빌드 (BucketStats + 2D 밀도) |
+| POST | `/api/v1/datasets/{id}/rows` | **실시간 추가** `{"columns": {"ts": [...], "price": [...]}}` |
+| DELETE | `/api/v1/datasets/{id}` | 삭제 |
+
+### 차트
+| Method | Endpoint | 설명 |
+|---|---|---|
+| POST | `/api/v1/charts/render` | 이미지 한 장. 헤더 `X-Webchart-Exact`, `X-Webchart-Source`, `X-Data-Points` |
+| POST | `/api/v1/charts` | 차트 등록 → `chart_id`(spec 내용 해시), 임베드 URL |
+| GET | `/api/v1/charts/{id}/image.png?x0&x1&w&h` | `<img src>` 임베드. ETag/304 |
+| GET | `/api/v1/charts/{id}/tiles/{z}/{i}@{dpr}x.png` | XYZ 타일 (CDN 캐시 가능) |
+
+인증이 켜져 있으면(`WEBCHART_API_KEYS`) 임베드·타일 URL에는 API 키 대신 차트별 HMAC 토큰이 붙는다.
+
+### 인터랙티브 세션 (WebSocket 프로토콜 v2)
+
+`POST /api/v1/sessions` → `WS /api/v1/ws/{session_id}`
+
+| 클라이언트 → 서버 | 서버 동작 |
+|---|---|
+| `viewport {req_id, x_range, zoom?, width_px, height_px, dpr}` | 진행 중인 이전 프레임 취소(latest-wins) → `frame_begin` → 타일(보이는 것부터, 준비되는 대로) → `frame_end` |
+| `hover {req_id, pixel_x}` | `crosshair`: 시리즈마다 가장 가까운 **원본** 값 |
+| `select {req_id, x_range}` | `range_stats`: 구간 count/min/max/mean/first/last (정확) |
+| `ping` | `pong` |
+
+- `frame_begin`에는 타일 목록, 축별 공유 y범위, **서버가 계산한 x/y 눈금**이 들어간다.
+- 데이터가 추가되면 `data_appended`가 온다(바뀐 x 구간). 바뀌지 않은 타일은 캐시 키가 그대로라 바로 나온다.
+- 타일 바이너리 헤더(13바이트, big-endian): `[magic 0x57][version 2][req_id u32][zoom u8][index u32][dpr u8][format u8]` + PNG
+
+### 운영
+| Endpoint | 설명 |
+|---|---|
+| `/health` | 상태 |
+| `/metrics` | Prometheus: 타일 요청(l1_hit / l2_hit / rendered), 렌더 지연, 경로별 exact 수 |
 
 ---
 
-## License
+## 설정 (환경변수, `WEBCHART_` 접두사)
 
-MIT
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| `REDIS_URL` | `redis://localhost:6379/0` | L2 캐시·세션 |
+| `DATA_DIR` | `/data/webchart` | 데이터 저장 경로 |
+| `TILE_SIZE` | `512` | 타일 px (2의 거듭제곱) |
+| `RENDER_POOL_SIZE` | `8` | fetch/project 스레드 수 |
+| `PAINT_PROCESSES` | `min(8, CPU/2)` | matplotlib 그리기 프로세스 수 (0이면 스레드에서 그림) |
+| `TILE_MEMORY_CACHE_BYTES` | 512MB | L1 타일 캐시 상한 |
+| `PYRAMID_MAX_LEVEL` / `PYRAMID_MAX_BYTES` | 24 / 4GB | 피라미드 깊이·크기 상한 |
+| `EXACT_RAW_ROW_BUDGET` | 20,000,000 | 정적 렌더에서 원본을 직접 집계할 행 수 상한 |
+| `INGEST_ROW_GROUP_ROWS` | 131,072 | 원본 로우그룹 크기 |
+| `API_KEYS`, `EMBED_SECRET` | 비움 | 인증 키, 임베드 토큰 비밀값 |
+
+---
+
+## 성능 (16코어, RAM 125GB, 캐시 없이 처음 그리기, 시리즈 2개)
+
+| 단계 | 2,000만 행 | 1억 행 |
+|---|---:|---:|
+| 인제스트 (정렬 검사 + 로우그룹) | 6.5s | 17.4s |
+| 피라미드 빌드 | 2.3s (420MB) | 17.8s (1.9GB) |
+| 타일 z=0 (피라미드) | 0.03s | 0.03s |
+| 깊은 줌 타일 (원본 범위 읽기) | 0.02s | 0.03s |
+| 정적 렌더 전체 범위 | 1.2s (원본, exact) | 0.11s (피라미드, 근사) / 5.6s (원본, exact) |
+| 타일 64장 프레임 (그리기 프로세스 8) | — | 0.28s |
+
+1억 행에서 뷰어로 휠 줌·드래그 이동을 2.8초 동안 40번(viewport 요청 72개) 몰아 보내도, 그 사이 프레임은 모두
+취소되고 마지막 입력 0.26초 뒤에 최종 프레임(타일 6장, exact)이 도착했다. DOM 노드는 3개였다.
+측정 방법과 단계별 기록은 [docs/improvement-plan.md](docs/improvement-plan.md) 10장과 `scripts/bench/`에 있다.
+
+---
+
+## 개발
+
+```bash
+pytest tests/ -v                 # 오라클 포함 (tests/oracle/)
+ruff check src/ && mypy --strict src/webchart/domain
+PYTHONPATH=src python scripts/bench/bench_pipeline.py --rows 20000000 --series 2
+PYTHONPATH=src python scripts/bench/bench_render_parallelism.py
+```
+
+`tests/oracle/`는 합성 데이터(스파이크, 결측, 불규칙 간격, 다중 시리즈, 시간축)로 서버 결과를 원본 전체 렌더와 비교한다. 비교 규칙(세로 1px, 선 굵기 번짐 가로 1열)은 계획 문서 8장에 있다.

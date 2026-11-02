@@ -150,7 +150,8 @@ def run(rows: int, series: int, chunk_rows: int) -> list[StepResult]:
     for attempt in (1, 2):  # 2회차는 그리기 워커가 모두 떠 있는 상태 (정상 상태 처리량)
         results.append(
             measure(
-                f"프레임: 타일 64장 동시, 그리기 프로세스 {settings.paint_processes}개 ({attempt}회차)",
+                f"프레임: 타일 64장 동시, 그리기 프로세스 {settings.paint_processes}개"
+                f" ({attempt}회차)",
                 lambda: render_frame_tiles(6),
                 lambda count: f"{count}장",
             )

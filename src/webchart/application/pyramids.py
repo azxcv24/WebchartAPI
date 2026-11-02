@@ -1,6 +1,7 @@
 """피라미드 빌드 유스케이스: 원본 → 격자 정렬 BucketStats 레벨 (계획 문서 1.3)."""
 
 import logging
+import math
 
 from webchart.application.windows import lattice_for, pyramid_dir
 from webchart.config import settings
@@ -81,6 +82,10 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
     return info
 
 
+# 밀도 최상세 레벨의 셀 수 상한 (데이터 행 수 대비)
+MAX_DENSITY_CELLS_PER_ROW = 4
+
+
 def _density_plan(meta: DatasetMeta, y_columns: list[str], max_level: int) -> DensityPlan | None:
     """밀도 레벨 명세. y 범위는 GLOBAL 정책과 같은 전역 자동 범위다 (통계가 없는 컬럼은 뺀다)."""
     y_ranges = {}
@@ -92,8 +97,12 @@ def _density_plan(meta: DatasetMeta, y_columns: list[str], max_level: int) -> De
             ).as_tuple()
     if not y_ranges:
         return None
+    # 셀 수(2^L × 행 수)가 데이터 행 수의 몇 배를 넘지 않게 한다. 작은 데이터에 수백만 셀
+    # 격자를 만들면 거의 비어 있고 공간만 차지한다. 그보다 깊은 줌은 원본을 세도 싸다.
+    by_rows = int(math.floor(math.log2(max(1, MAX_DENSITY_CELLS_PER_ROW * meta.row_count
+                                            // settings.density_rows))))  # fmt: skip
     return DensityPlan(
-        max_level=min(max_level, settings.density_max_level),
+        max_level=max(0, min(max_level, settings.density_max_level, by_rows)),
         rows=settings.density_rows,
         y_ranges=y_ranges,
     )

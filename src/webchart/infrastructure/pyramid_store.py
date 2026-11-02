@@ -144,7 +144,8 @@ def build_pyramid(
             stats = {series: level_stats.merge_pairs() for series, level_stats in stats.items()}
 
     # 밀도: counts[행, 열] → 열 우선(열마다 행 rows개가 연속)으로 저장해 x 구간을 연속으로 자른다
-    columns_major = {series: d.counts.T.astype(np.int64) for series, d in densities.items()}
+    # 개수는 uint32로 저장한다 (셀 하나에 40억 점 미만). int64의 절반 크기다.
+    columns_major = {series: d.counts.T.astype(np.uint32) for series, d in densities.items()}
     for level in range(density.max_level if density else -1, -1, -1):
         total_bytes += _write_arrays(
             density_dir(storage_dir, level),
@@ -152,7 +153,7 @@ def build_pyramid(
         )
         if level > 0:
             columns_major = {
-                series: counts.reshape(-1, 2, counts.shape[1]).sum(axis=1)
+                series: counts.reshape(-1, 2, counts.shape[1]).sum(axis=1, dtype=np.uint32)
                 for series, counts in columns_major.items()
             }
     return total_bytes
@@ -504,8 +505,9 @@ def _add_density_column_major(
     """열 우선 저장(열마다 rows개 연속)인 밀도 배열에 점을 더한다 (add_points와 같은 경계 규칙)."""
     scratch = empty_density(grid, y_low, y_high, rows)
     add_points(scratch, x, y)
-    touched = np.flatnonzero(scratch.counts.T.reshape(-1))
-    counts[touched] += scratch.counts.T.reshape(-1)[touched]
+    added = scratch.counts.T.reshape(-1)
+    touched = np.flatnonzero(added)
+    counts[touched] = counts[touched] + added[touched].astype(counts.dtype)
 
 
 def grow_storage(old_dir: Path, new_dir: Path, info: PyramidInfo, toward_end: bool) -> PyramidInfo:

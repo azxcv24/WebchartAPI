@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from webchart.application import pyramids
 from webchart.application.pyramids import build_pyramid
 from webchart.application.tiles import (
     PipelineTileRenderer,
@@ -144,9 +145,11 @@ async def test_prebuilt_ohlc_columns_merge_correctly():
 
 @pytest.mark.parametrize("with_pyramid", [False, True], ids=["raw", "pyramid"])
 @pytest.mark.parametrize("dpr", [1, 2])
-async def test_density_counts_equal_raw_binning(frame, with_pyramid, dpr):
+async def test_density_counts_equal_raw_binning(frame, with_pyramid, dpr, monkeypatch):
     ingest(frame, "density")
     if with_pyramid:
+        # 작은 데이터라 기본 상한으로는 밀도 레벨이 얕다. 타일 레벨(10~11)까지 만들게 한다
+        monkeypatch.setattr(pyramids, "MAX_DENSITY_CELLS_PER_ROW", 64)
         build_pyramid("density", X_COLUMN, columns=DATA.y_columns)
     meta = get_dataset_meta("density")
     spec = _spec("density", LayerSpec(kind="heatmap", column="s0"))
