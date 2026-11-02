@@ -5,7 +5,7 @@ import logging
 import pandas as pd
 
 from webchart.core.concurrency import run_in_thread
-from webchart.core.math_utils import Viewport
+from webchart.domain.geometry import ScreenTransform, XRange
 from webchart.models.session import SessionState
 from webchart.models.ws_messages import HoverDataMessage
 from webchart.services.data.access import read_window
@@ -13,17 +13,24 @@ from webchart.services.data.access import read_window
 logger = logging.getLogger("webchart.session.interaction")
 
 
-def _viewport_from_state(state: SessionState) -> Viewport:
-    vp = state.viewport
-    y_range = vp.y_range or (0.0, 1.0)
-    return Viewport(
-        pixel_width=vp.pixel_width,
-        pixel_height=vp.pixel_height,
-        x_min=vp.x_range[0],
-        x_max=vp.x_range[1],
-        y_min=y_range[0],
-        y_max=y_range[1],
-    )
+def _screen_transform_of(state: SessionState) -> ScreenTransform | None:
+    """세션 뷰포트의 화면 변환. 뷰포트가 비정상(빈 구간 등)이면 None.
+
+    y_range가 없으면 (0, 1)을 가정한다. 실제 타일의 y 스케일과 다를 수 있다
+    (D8, Phase 3에서 서버가 확정한 y범위를 세션에 저장하도록 바꾼다).
+    """
+    viewport = state.viewport
+    y_low, y_high = viewport.y_range or (0.0, 1.0)
+    try:
+        return ScreenTransform(
+            x_view=XRange(*viewport.x_range),
+            y_low=y_low,
+            y_high=y_high,
+            width_px=viewport.pixel_width,
+            height_px=viewport.pixel_height,
+        )
+    except ValueError:
+        return None
 
 
 async def resolve_hover(
@@ -32,8 +39,10 @@ async def resolve_hover(
     pixel_y: float,
 ) -> HoverDataMessage | None:
     """Resolve a hover event to the nearest data point."""
-    viewport = _viewport_from_state(state)
-    data_x, data_y = viewport.pixel_to_data(pixel_x, pixel_y)
+    transform = _screen_transform_of(state)
+    if transform is None:
+        return None
+    data_x, _ = transform.to_data(pixel_x, pixel_y)
 
     spec = state.chart_config
     x_col = spec.x_axis.column
@@ -53,8 +62,7 @@ async def resolve_hover(
     primary_y = y_columns[0]
 
     # Read a small window around the hover point
-    x_range_width = viewport.x_max - viewport.x_min
-    margin = x_range_width * 0.01  # 1% margin
+    margin = transform.x_view.width * 0.01  # 뷰포트 폭의 1%
     window = (data_x - margin, data_x + margin)
 
     try:

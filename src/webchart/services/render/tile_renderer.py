@@ -1,4 +1,8 @@
-"""Tile-based renderer for dynamic interactive charts."""
+"""인터랙티브 차트용 타일 렌더러.
+
+x 전체 범위를 `PixelLattice`로 2^zoom 등분하고, 뷰포트에 보이는 타일과
+좌우 프리페치 타일만 그린다. 렌더된 타일은 Redis에 캐시한다.
+"""
 
 import asyncio
 import logging
@@ -6,7 +10,7 @@ import logging
 from webchart.cache import redis_cache
 from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
-from webchart.core.math_utils import visible_tile_indices
+from webchart.domain.geometry import PixelLattice, TileAddress, XRange
 from webchart.models.chart import ChartSpec
 from webchart.models.dataset import DatasetMeta
 from webchart.services.data.access import get_dataset_meta, read_window
@@ -22,40 +26,54 @@ logger = logging.getLogger("webchart.render.tile")
 
 _renderer = MatplotlibRenderer()
 
+# 프리페치: 보이는 타일 좌우로 미리 그려 둘 타일 수
+PREFETCH_RADIUS = 2
 
-def _resolve_x_range(meta: DatasetMeta, x_col: str) -> tuple[float, float] | None:
-    info = next((c for c in meta.columns if c.name == x_col), None)
-    if info and info.min_value is not None and info.max_value is not None:
+
+def lattice_for(meta: DatasetMeta, x_column: str) -> PixelLattice:
+    """데이터셋의 x 컬럼 통계로 타일 격자를 만든다.
+
+    통계가 없거나 수치로 바꿀 수 없으면 [0, 1) 격자로 대체한다. 이 경우 타일
+    위치가 실제 데이터와 맞지 않으므로 경고를 남긴다.
+    """
+    column = next((c for c in meta.columns if c.name == x_column), None)
+    if column is not None and column.min_value is not None and column.max_value is not None:
         try:
-            return float(info.min_value), float(info.max_value)
+            return PixelLattice.from_data_bounds(
+                float(column.min_value), float(column.max_value), settings.tile_size
+            )
         except (TypeError, ValueError):
-            return None
-    return None
+            pass
+    logger.warning(
+        f"x 컬럼 '{x_column}'의 수치 범위를 알 수 없어 [0, 1) 격자로 대체한다 "
+        f"(dataset={meta.dataset_id})"
+    )
+    return PixelLattice(XRange(0.0, 1.0), settings.tile_size)
 
 
 def _read_tile_data(
     dataset_id: str,
     meta: DatasetMeta,
-    x_col: str,
-    x_range: tuple[float, float],
+    x_column: str,
+    tile_range: XRange,
     columns: list[str],
     zoom: int,
 ):
-    """Read tile data from the pyramid when available, else from base.
+    """타일 구간의 데이터를 피라미드에서 읽고, 쓸 수 없으면 원본에서 읽는다.
 
-    Runs in the render thread pool (sync). Picks a pyramid level for the
-    zoom; falls back to base data when there's no pyramid for this x column
-    or the zoom is finer than the pyramid was built for (where the base
-    read is already cheap because the x range is narrow).
+    렌더 스레드 풀에서 동기로 실행된다. 이 x 컬럼의 피라미드가 없거나, 줌이
+    피라미드가 만들어진 해상도보다 깊으면 원본을 읽는다. 깊은 줌은 x 구간이
+    좁아서 원본 읽기도 상대적으로 저렴하다는 가정이다 (D6: 현재는 전체 스캔이라
+    이 가정이 성립하지 않으며 Phase 1.2에서 해결한다).
     """
-    info = usable_pyramid(meta, x_col)
-    if info is not None:
-        level = level_for_zoom(info, zoom)
+    pyramid = usable_pyramid(meta, x_column)
+    if pyramid is not None:
+        level = level_for_zoom(pyramid, zoom)
         if level is not None:
-            df = read_pyramid_window(dataset_id, x_col, level, x_range, columns)
+            df = read_pyramid_window(dataset_id, x_column, level, tile_range.as_tuple(), columns)
             if df is not None:
                 return df
-    return read_window(dataset_id, x_col, x_range, columns)
+    return read_window(dataset_id, x_column, tile_range.as_tuple(), columns)
 
 
 async def render_tile(
@@ -67,10 +85,10 @@ async def render_tile(
     chart_hash: str = "",
     meta: DatasetMeta | None = None,
 ) -> bytes:
-    """Render a single tile, using cache if available.
+    """타일 하나를 그린다. 캐시에 있으면 캐시를 반환한다.
 
-    `meta` may be passed in by callers that render multiple tiles for the
-    same dataset so we avoid re-reading meta.json per tile.
+    여러 타일을 연달아 그리는 호출자는 `meta`를 넘겨서 타일마다 meta.json을
+    다시 읽지 않게 한다.
     """
     key = redis_cache.tile_key(dataset_id, chart_hash, zoom, tile_x, tile_y)
     try:
@@ -78,29 +96,18 @@ async def render_tile(
         if cached is not None:
             return cached
     except Exception:
-        logger.debug("Redis unavailable, rendering without cache")
+        logger.debug("Redis를 쓸 수 없어 캐시 없이 렌더한다")
 
     if meta is None:
         meta = get_dataset_meta(dataset_id)
     x_col = chart_spec.x_axis.column
-
-    x_bounds = _resolve_x_range(meta, x_col)
-    if x_bounds is None:
-        data_x_min, data_x_max = 0.0, 1.0
-    else:
-        data_x_min, data_x_max = x_bounds
-
-    num_tiles = 2**zoom
-    tile_width = (data_x_max - data_x_min) / num_tiles
-    tile_x_min = data_x_min + tile_x * tile_width
-    tile_x_max = tile_x_min + tile_width
+    tile_range = lattice_for(meta, x_col).tile_range(TileAddress(zoom, tile_x))
 
     y_columns = _get_y_columns(chart_spec)
     columns = [x_col] + y_columns
 
     data = await run_in_thread(
-        _read_tile_data,
-        dataset_id, meta, x_col, (tile_x_min, tile_x_max), columns, zoom,
+        _read_tile_data, dataset_id, meta, x_col, tile_range, columns, zoom,
     )
 
     if not data.empty and len(data) > settings.tile_size:
@@ -116,13 +123,13 @@ async def render_tile(
         y_columns,
         chart_spec.chart_type,
         settings.tile_size,
-        (tile_x_min, tile_x_max),
+        tile_range.as_tuple(),
     )
 
     try:
         await redis_cache.set_tile(key, tile_bytes)
     except Exception:
-        logger.debug("Failed to cache tile")
+        logger.debug("타일 캐시 저장 실패")
 
     return tile_bytes
 
@@ -133,54 +140,44 @@ async def render_visible_tiles(
     viewport_x_range: tuple[float, float],
     zoom: int,
     chart_hash: str = "",
-    prefetch: int = 2,
+    prefetch: int = PREFETCH_RADIUS,
 ) -> dict[str, bytes]:
-    """Render all tiles visible in the viewport, plus prefetch tiles.
+    """뷰포트에 보이는 타일과 프리페치 타일을 그린다.
 
-    Returns dict of tile_id -> PNG bytes.
+    반환값은 `tile_id → PNG 바이트`이다. 실패한 타일은 경고만 남기고 빠진다.
     """
     meta = get_dataset_meta(dataset_id)
-    x_col = chart_spec.x_axis.column
+    lattice = lattice_for(meta, chart_spec.x_axis.column)
 
-    x_bounds = _resolve_x_range(meta, x_col)
-    data_x_min, data_x_max = x_bounds if x_bounds else viewport_x_range
+    try:
+        view = XRange(*viewport_x_range)
+    except ValueError:
+        logger.warning(f"잘못된 뷰포트 x 구간 {viewport_x_range}: 타일을 그리지 않는다")
+        return {}
+    visible = lattice.tiles_covering(view, zoom)
+    targets = lattice.with_neighbors(visible, prefetch)
 
-    indices = visible_tile_indices(
-        viewport_x_range[0], viewport_x_range[1],
-        data_x_min, data_x_max,
-        zoom,
+    # render_tile 내부의 run_in_thread가 렌더 풀로 작업을 넘기므로,
+    # 여기서 gather하면 타일들이 병렬로 그려진다.
+    rendered = await asyncio.gather(
+        *(
+            render_tile(dataset_id, chart_spec, tile.zoom, tile.index, 0, chart_hash, meta=meta)
+            for tile in targets
+        ),
+        return_exceptions=True,
     )
 
-    num_tiles = 2**zoom
-    all_indices = set(indices)
-    for idx in indices:
-        for offset in range(1, prefetch + 1):
-            if idx - offset >= 0:
-                all_indices.add(idx - offset)
-            if idx + offset < num_tiles:
-                all_indices.add(idx + offset)
-
-    # render_tile awaits run_in_thread internally so the actual matplotlib
-    # work fans out across the render pool — gather here gives concurrency.
-    ordered = sorted(all_indices)
-    tasks = [
-        render_tile(dataset_id, chart_spec, zoom, idx, 0, chart_hash, meta=meta)
-        for idx in ordered
-    ]
-    rendered = await asyncio.gather(*tasks, return_exceptions=True)
-
-    result: dict[str, bytes] = {}
-    for idx, outcome in zip(ordered, rendered):
-        tile_id = f"{zoom}-{idx}-0"
-        if isinstance(outcome, Exception):
-            logger.warning(f"Tile {tile_id} render failed: {outcome}")
+    tiles: dict[str, bytes] = {}
+    for tile, outcome in zip(targets, rendered):
+        if isinstance(outcome, BaseException):
+            logger.warning(f"타일 {tile.tile_id} 렌더 실패: {outcome}")
             continue
-        result[tile_id] = outcome
-    return result
+        tiles[tile.tile_id] = outcome
+    return tiles
 
 
 def _get_y_columns(spec: ChartSpec) -> list[str]:
-    """Extract y column names from chart spec."""
+    """차트 spec에서 y 컬럼 이름 목록을 꺼낸다."""
     columns = []
     if spec.series:
         columns = [s.column for s in spec.series]
