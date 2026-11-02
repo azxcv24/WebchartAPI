@@ -14,9 +14,19 @@ import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+import numpy as np
+import numpy.typing as npt
+
 # 타일 줌 상한. 2^24 타일이면 1년치 데이터의 타일 하나가 약 2초 폭이라 충분하다.
 # ViewportWindow.zoom 검증 범위(le=24)와 같은 값을 쓴다.
 MAX_ZOOM = 24
+
+# 허용하는 장치 픽셀 비율(dpr). 2의 거듭제곱이어야 타일 버킷이 피라미드 레벨과 맞는다.
+ALLOWED_DPR = (1, 2, 4)
+
+
+def is_power_of_two(value: int) -> bool:
+    return value > 0 and value & (value - 1) == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +58,69 @@ class XRange:
 
     def as_tuple(self) -> tuple[float, float]:
         return (self.start, self.end)
+
+
+@dataclass(frozen=True, slots=True)
+class BucketGrid:
+    """x 구간을 같은 폭의 버킷 `bucket_count`개로 나눈 격자.
+
+    버킷 j는 `[origin + j·bucket_width, origin + (j+1)·bucket_width)` 이다.
+    그림을 그릴 때는 버킷 하나가 픽셀 열 하나다. M4 집계가 원본과 같은 그림을 내려면
+    버킷 경계가 픽셀 경계와 일치해야 하므로, 집계와 그리기가 반드시 같은 격자를 쓴다.
+    """
+
+    origin: float
+    bucket_width: float
+    bucket_count: int
+
+    def __post_init__(self) -> None:
+        if not (math.isfinite(self.origin) and math.isfinite(self.bucket_width)):
+            raise ValueError(f"격자 값은 유한해야 한다: {self.origin}, {self.bucket_width}")
+        if self.bucket_width <= 0:
+            raise ValueError(f"bucket_width는 양수여야 한다: {self.bucket_width}")
+        if self.bucket_count <= 0:
+            raise ValueError(f"bucket_count는 양수여야 한다: {self.bucket_count}")
+
+    @classmethod
+    def covering(cls, x_range: XRange, bucket_count: int) -> "BucketGrid":
+        """`x_range`를 `bucket_count`등분한 격자 (화면 폭 = 버킷 수)."""
+        return cls(x_range.start, x_range.width / bucket_count, bucket_count)
+
+    @property
+    def end(self) -> float:
+        return self.origin + self.bucket_width * self.bucket_count
+
+    @property
+    def x_range(self) -> XRange:
+        return XRange(self.origin, self.end)
+
+    def index_of(self, x: npt.NDArray[np.float64]) -> npt.NDArray[np.int64]:
+        """각 x가 속한 버킷 번호. 격자 밖이면 음수이거나 bucket_count 이상이다."""
+        index: npt.NDArray[np.int64] = np.floor((x - self.origin) / self.bucket_width).astype(
+            np.int64
+        )
+        return index
+
+    def sub_grid(self, first: int, count: int) -> "BucketGrid":
+        """버킷 `[first, first + count)`만 떼어 낸 격자 (경계는 그대로 유지)."""
+        if first < 0 or count <= 0 or first + count > self.bucket_count:
+            raise ValueError(f"격자 범위 초과: [{first}, {first + count}) / {self.bucket_count}")
+        return BucketGrid(self.origin + first * self.bucket_width, self.bucket_width, count)
+
+    def alignment_ratio(self, finer: "BucketGrid", rel_tol: float = 1e-9) -> int | None:
+        """이 격자의 모든 경계가 `finer` 격자의 경계와 겹치면 버킷당 finer 버킷 수를 반환한다.
+
+        겹치지 않으면 None. 피라미드 레벨을 픽셀 열로 다시 묶을 때 결과가 정확한지
+        (exact) 판정하는 데 쓴다. 부동소수 오차를 감안해 상대 오차 `rel_tol`을 허용한다.
+        """
+        ratio = self.bucket_width / finer.bucket_width
+        whole_ratio = round(ratio)
+        if whole_ratio < 1 or not math.isclose(ratio, whole_ratio, rel_tol=rel_tol):
+            return None
+        offset = (self.origin - finer.origin) / finer.bucket_width
+        if not math.isclose(offset, round(offset), rel_tol=0, abs_tol=rel_tol * max(1, offset)):
+            return None
+        return whole_ratio
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -85,7 +158,7 @@ class PixelLattice:
     tile_size_px: int
 
     def __post_init__(self) -> None:
-        if self.tile_size_px <= 0 or self.tile_size_px & (self.tile_size_px - 1):
+        if not is_power_of_two(self.tile_size_px):
             raise ValueError(f"tile_size_px는 2의 거듭제곱이어야 한다: {self.tile_size_px}")
 
     @classmethod
@@ -120,6 +193,23 @@ class PixelLattice:
         is_last = tile.index == self.tile_count(tile.zoom) - 1
         end = self.domain.end if is_last else start + width
         return XRange(start, end)
+
+    def level_grid(self, level: int) -> BucketGrid:
+        """피라미드 레벨 `level`의 격자: domain을 2^level 등분한다."""
+        count = 1 << level
+        return BucketGrid(self.domain.start, self.domain.width / count, count)
+
+    def tile_level(self, zoom: int, dpr: int = 1) -> int:
+        """타일 픽셀 열 1개 = 버킷 1개가 되는 레벨: L = zoom + log2(tile_size_px · dpr)."""
+        if dpr not in ALLOWED_DPR:
+            raise ValueError(f"dpr은 {ALLOWED_DPR} 중 하나여야 한다: {dpr}")
+        return zoom + (self.tile_size_px * dpr).bit_length() - 1
+
+    def tile_grid(self, tile: TileAddress, dpr: int = 1) -> BucketGrid:
+        """타일의 픽셀 열 격자. 레벨 격자의 일부를 잘라 내므로 경계가 피라미드와 정확히 같다."""
+        columns_px = self.tile_size_px * dpr
+        level = self.level_grid(self.tile_level(tile.zoom, dpr))
+        return level.sub_grid(tile.index * columns_px, columns_px)
 
     def tile_index_at(self, x: float, zoom: int) -> int:
         """x를 포함하는 타일 인덱스. domain 밖의 x는 가장 가까운 끝 타일로 붙인다."""

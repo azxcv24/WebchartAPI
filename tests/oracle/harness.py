@@ -30,6 +30,9 @@ from webchart.testing.synthetic import X_COLUMN
 # 열 외곽선 허용 오차. 안티앨리어싱 경계에서 1px 흔들림은 왜곡으로 보지 않는다.
 TOLERANCE_PX = 1
 
+# 선 굵기 번짐 허용: 이웃 1열까지 (testing/raster.py, 계획 문서 8장)
+STROKE_REACH_PX = 1
+
 # 허용하는 어긋난 열 수. 무왜곡 계약이므로 0이다.
 MAX_MISMATCHED_COLUMNS = 0
 
@@ -120,4 +123,4 @@ async def diff_tiles_against_reference(
     lattice = tile_renderer.lattice_for(meta, spec.x_axis.column)
     expected = render_reference_strip(frame, spec, lattice, zoom)
     actual = await render_pipeline_strip(meta, spec, zoom)
-    return compare_envelopes(ink_mask(expected), ink_mask(actual), TOLERANCE_PX)
+    return compare_envelopes(ink_mask(expected), ink_mask(actual), TOLERANCE_PX, STROKE_REACH_PX)

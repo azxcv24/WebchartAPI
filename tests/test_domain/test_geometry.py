@@ -2,9 +2,16 @@
 
 import math
 
+import numpy as np
 import pytest
 
-from webchart.domain.geometry import PixelLattice, ScreenTransform, TileAddress, XRange
+from webchart.domain.geometry import (
+    BucketGrid,
+    PixelLattice,
+    ScreenTransform,
+    TileAddress,
+    XRange,
+)
 
 
 class TestXRange:
@@ -98,6 +105,58 @@ class TestPixelLattice:
     def test_with_neighbors_zero_radius_is_identity(self):
         tiles = [TileAddress(3, 4)]
         assert self.lattice().with_neighbors(tiles, radius=0) == tiles
+
+
+class TestBucketGrid:
+    def test_index_of_uses_half_open_buckets(self):
+        grid = BucketGrid(10.0, 2.0, 5)  # [10, 20)
+        index = grid.index_of(np.array([10.0, 11.9, 12.0, 19.9, 20.0, 9.9]))
+        assert list(index) == [0, 0, 1, 4, 5, -1]
+
+    def test_sub_grid_keeps_boundaries(self):
+        grid = BucketGrid(0.0, 0.5, 8)
+        sub = grid.sub_grid(2, 3)
+        assert (sub.origin, sub.end) == (1.0, 2.5)
+        with pytest.raises(ValueError):
+            grid.sub_grid(6, 3)
+
+    @pytest.mark.parametrize(
+        "coarse, expected",
+        [
+            (BucketGrid(0.0, 4.0, 2), 4),  # 경계가 모두 겹침
+            (BucketGrid(2.0, 2.0, 3), 2),
+            (BucketGrid(0.5, 4.0, 2), None),  # 원점이 어긋남
+            (BucketGrid(0.0, 3.0, 2), 3),
+            (BucketGrid(0.0, 2.5, 2), None),  # 폭이 배수가 아님
+        ],
+    )
+    def test_alignment_ratio(self, coarse, expected):
+        finer = BucketGrid(0.0, 1.0, 16)
+        assert coarse.alignment_ratio(finer) == expected
+
+
+class TestTileGrid:
+    def lattice(self) -> PixelLattice:
+        return PixelLattice(XRange(0.0, 100.0), tile_size_px=512)
+
+    @pytest.mark.parametrize("zoom, dpr, level", [(0, 1, 9), (3, 1, 12), (3, 2, 13), (0, 4, 11)])
+    def test_tile_level(self, zoom, dpr, level):
+        assert self.lattice().tile_level(zoom, dpr) == level
+
+    def test_tile_grid_is_slice_of_level_grid(self):
+        lattice = self.lattice()
+        tile = TileAddress(2, 3)
+        grid = lattice.tile_grid(tile, dpr=2)
+        level = lattice.level_grid(lattice.tile_level(2, 2))
+
+        assert grid.bucket_count == 1024
+        assert grid.bucket_width == level.bucket_width
+        assert grid.origin == pytest.approx(lattice.tile_range(tile).start)
+        assert grid.alignment_ratio(level) == 1
+
+    def test_rejects_unsupported_dpr(self):
+        with pytest.raises(ValueError):
+            self.lattice().tile_level(0, dpr=3)
 
 
 class TestScreenTransform:

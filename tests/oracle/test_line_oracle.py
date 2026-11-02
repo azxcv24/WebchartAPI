@@ -16,6 +16,7 @@ from webchart.testing.raster import compare_envelopes, decode_png, ink_mask
 from webchart.testing.synthetic import X_COLUMN, SyntheticSpec, generate
 
 from .harness import (
+    STROKE_REACH_PX,
     TOLERANCE_PX,
     assert_no_distortion,
     diff_tiles_against_reference,
@@ -147,4 +148,4 @@ def test_static_render_secondary_series_peaks_survive(client):
     expected = ink_mask(decode_png(expected_png))
     actual = ink_mask(decode_png(response.content))
     assert expected.shape == actual.shape, "축 라벨 폭이 달라 그림 크기부터 다르다"
-    assert_no_distortion(compare_envelopes(expected, actual, TOLERANCE_PX))
+    assert_no_distortion(compare_envelopes(expected, actual, TOLERANCE_PX, STROKE_REACH_PX))
