@@ -1,71 +1,148 @@
-"""WebSocket message protocol definitions."""
+"""WebSocket 프로토콜 v2 메시지 (계획 문서 4.3).
+
+모든 요청에 클라이언트가 붙인 `req_id`가 있고, 서버 응답은 같은 req_id를 돌려준다.
+새 viewport 요청이 오면 진행 중인 이전 프레임은 취소된다 (latest-wins). 클라이언트는
+최신 req_id가 아닌 응답을 버리면 된다.
+
+타일 이미지는 바이너리 프레임으로 보낸다: 고정 헤더 13바이트(big-endian) + 이미지.
+
+    [magic u8 = 0x57 'W'][version u8 = 2][req_id u32][zoom u8][index u32][dpr u8][format u8]
+
+format: 0 = PNG
+"""
 
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-# --- Client → Server ---
+TILE_HEADER_FORMAT = ">BBIBIBB"
+TILE_HEADER_MAGIC = 0x57
+PROTOCOL_VERSION = 2
+TILE_FORMAT_PNG = 0
 
-class ViewportChangeMessage(BaseModel):
-    type: str = "viewport_change"
+ReqId = int
+
+
+# --- 클라이언트 → 서버 ---
+
+
+class ViewportRequest(BaseModel):
+    """화면 상태가 바뀜: 새 프레임을 그려 달라는 요청.
+
+    zoom을 생략하면 서버가 화면 폭에 맞춰 고른다 (타일 픽셀 ≥ 화면 픽셀이 되는 가장 얕은 줌).
+    """
+
+    type: Literal["viewport"] = "viewport"
+    req_id: ReqId = Field(ge=0, le=2**32 - 1)
     x_range: tuple[float, float]
-    y_range: tuple[float, float] | None = None  # 무시된다: y범위는 서버가 정책으로 정한다
-    zoom: int = Field(default=0, ge=0, le=24)
-    dpr: Literal[1, 2, 4] | None = None  # None이면 세션의 기존 값
+    zoom: int | None = Field(default=None, ge=0, le=24)
+    width_px: int = Field(default=1200, ge=16, le=16384)
+    height_px: int = Field(default=600, ge=16, le=16384)
+    dpr: Literal[1, 2, 4] = 1
 
 
-class HoverMessage(BaseModel):
-    type: str = "hover"
+class HoverRequest(BaseModel):
+    """마우스 위치(뷰포트 기준 픽셀)의 크로스헤어 값 요청."""
+
+    type: Literal["hover"] = "hover"
+    req_id: ReqId = Field(ge=0, le=2**32 - 1)
     pixel_x: float
-    pixel_y: float
+    pixel_y: float = 0.0
 
 
-class ScrollMessage(BaseModel):
-    type: str = "scroll"
-    direction: str  # left, right, up, down
-    delta: float
+class SelectRequest(BaseModel):
+    """x 구간 [start, end)의 정확한 통계 요청."""
 
-
-class PingMessage(BaseModel):
-    type: str = "ping"
-
-
-# --- Server → Client ---
-
-class TileInfo(BaseModel):
-    tile_id: str  # "{zoom}-{x}-{y}"
-    x: int
-    y: int
-    width: int
-    height: int
-    ready: bool
-
-
-class TilesMetaMessage(BaseModel):
-    type: str = "tiles_meta"
-    tiles: list[TileInfo]
-
-
-class HoverDataMessage(BaseModel):
-    type: str = "hover_data"
-    data_x: float
-    data_y: float
-    series: str
-    label: str = ""
-    extra: dict[str, object] | None = None
-
-
-class ViewportAckMessage(BaseModel):
-    type: str = "viewport_ack"
+    type: Literal["select"] = "select"
+    req_id: ReqId = Field(ge=0, le=2**32 - 1)
     x_range: tuple[float, float]
+
+
+class PingRequest(BaseModel):
+    type: Literal["ping"] = "ping"
+
+
+# --- 서버 → 클라이언트 ---
+
+
+class TickMessage(BaseModel):
+    value: float
+    label: str
+    pixel: float  # 뷰포트 왼쪽(x) 또는 위쪽(y)에서의 거리 (CSS px)
+
+
+class TileRef(BaseModel):
     zoom: int
-    tile_count: int
-    y_range: tuple[float, float] | None = None  # 주 y축 범위 (v1 호환)
-    y_ranges: dict[str, tuple[float, float]] = Field(default_factory=dict)  # 축별 공유 y범위
-    exact: bool = True
+    index: int
+    x_start: float  # 타일이 덮는 x 구간 (정규 좌표)
+    x_end: float
+    visible: bool
+
+
+class FrameBegin(BaseModel):
+    """프레임 시작: 이 프레임의 타일 목록, 축별 y범위, 서버가 계산한 눈금."""
+
+    type: Literal["frame_begin"] = "frame_begin"
+    req_id: ReqId
+    zoom: int
+    dpr: int
+    tile_size_px: int  # 장치 픽셀 (= 설정 tile_size × dpr)
+    x_range: tuple[float, float]
+    tiles: list[TileRef]
+    y_ranges: dict[str, tuple[float, float]]
+    x_ticks: list[TickMessage]
+    y_ticks: dict[str, list[TickMessage]]
+
+
+class FrameEnd(BaseModel):
+    type: Literal["frame_end"] = "frame_end"
+    req_id: ReqId
+    sent: int
+    cached: int
+    exact: bool
+    elapsed_ms: float
+
+
+class CrosshairValue(BaseModel):
+    series: str
+    x: float
+    y: float
+    label: str
+
+
+class Crosshair(BaseModel):
+    type: Literal["crosshair"] = "crosshair"
+    req_id: ReqId
+    x: float
+    points: list[CrosshairValue]
+
+
+class SeriesStats(BaseModel):
+    count: int
+    min: float | None
+    max: float | None
+    mean: float | None
+    first: float | None
+    last: float | None
+    min_x: float | None
+    max_x: float | None
+
+
+class RangeStats(BaseModel):
+    type: Literal["range_stats"] = "range_stats"
+    req_id: ReqId
+    x_range: tuple[float, float]
+    exact: bool
+    source: str
+    series: dict[str, SeriesStats]
+
+
+class Pong(BaseModel):
+    type: Literal["pong"] = "pong"
 
 
 class ErrorMessage(BaseModel):
-    type: str = "error"
+    type: Literal["error"] = "error"
+    req_id: ReqId | None = None
     code: str
     message: str
