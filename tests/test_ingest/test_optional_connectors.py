@@ -16,8 +16,7 @@ from webchart.services.ingest.smb import SmbIngestBackend
 
 def test_smb_unc_path():
     assert (
-        SmbIngestBackend._unc_path("smb://host/share/dir/file.csv")
-        == r"\\host\share\dir\file.csv"
+        SmbIngestBackend._unc_path("smb://host/share/dir/file.csv") == r"\\host\share\dir\file.csv"
     )
 
 
@@ -72,9 +71,7 @@ def test_clickhouse_table_identifier_validated():
         (SftpIngestBackend, "sftp", "asyncssh"),
     ],
 )
-async def test_missing_driver_raises_connector_error(
-    backend_cls, scheme, lib, tmp_data_dir
-):
+async def test_missing_driver_raises_connector_error(backend_cls, scheme, lib, tmp_data_dir):
     pytest.importorskip  # noqa: keep import semantics explicit
     try:
         __import__(lib)
@@ -97,6 +94,4 @@ async def test_smb_missing_driver(tmp_data_dir):
         pass
     spec = RemoteSourceSpec(protocol="smb", uri="smb://h/share/data.csv")
     with pytest.raises(ConnectorError):
-        await SmbIngestBackend().ingest_to_parquet(
-            spec, tmp_data_dir / "datasets" / "ds-x"
-        )
+        await SmbIngestBackend().ingest_to_parquet(spec, tmp_data_dir / "datasets" / "ds-x")

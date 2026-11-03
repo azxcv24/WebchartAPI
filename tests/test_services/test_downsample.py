@@ -8,11 +8,13 @@ from webchart.services.data.downsample import downsample
 
 @pytest.fixture
 def large_df():
-    return pd.DataFrame({
-        "x": range(10000),
-        "y": [i * 2.0 + (i % 17) for i in range(10000)],
-        "z": [i ** 0.5 for i in range(10000)],
-    })
+    return pd.DataFrame(
+        {
+            "x": range(10000),
+            "y": [i * 2.0 + (i % 17) for i in range(10000)],
+            "z": [i**0.5 for i in range(10000)],
+        }
+    )
 
 
 class TestLTTB:

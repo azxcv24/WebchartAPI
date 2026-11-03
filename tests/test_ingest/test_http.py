@@ -14,9 +14,7 @@ from webchart.services.ingest.http import HttpIngestBackend
 @pytest.fixture
 def http_server(tmp_path):
     """Serve tmp_path over HTTP on an ephemeral port."""
-    handler = functools.partial(
-        http.server.SimpleHTTPRequestHandler, directory=str(tmp_path)
-    )
+    handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(tmp_path))
     httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
     port = httpd.server_address[1]
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)

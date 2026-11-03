@@ -29,7 +29,9 @@ def test_connect_s3_lifecycle(client, monkeypatch, tmp_data_dir):
         def download_file(self, bucket, key, filename):
             sample.to_csv(filename, index=False)
 
-    monkeypatch.setattr(s3_module.S3IngestBackend, "_client", staticmethod(lambda spec: FakeClient()))
+    monkeypatch.setattr(
+        s3_module.S3IngestBackend, "_client", staticmethod(lambda spec: FakeClient())
+    )
 
     resp = client.post(
         "/api/v1/datasets/connect",

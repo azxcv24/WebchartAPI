@@ -80,11 +80,13 @@ def client():
 @pytest.fixture
 def sample_csv(tmp_path) -> Path:
     """Create a sample CSV file for testing."""
-    df = pd.DataFrame({
-        "x": range(1000),
-        "y": [i * 2.5 + (i % 7) for i in range(1000)],
-        "category": [f"cat_{i % 5}" for i in range(1000)],
-    })
+    df = pd.DataFrame(
+        {
+            "x": range(1000),
+            "y": [i * 2.5 + (i % 7) for i in range(1000)],
+            "category": [f"cat_{i % 5}" for i in range(1000)],
+        }
+    )
     path = tmp_path / "sample.csv"
     df.to_csv(path, index=False)
     return path
@@ -93,8 +95,10 @@ def sample_csv(tmp_path) -> Path:
 @pytest.fixture
 def sample_dataframe() -> pd.DataFrame:
     """Sample DataFrame for unit tests."""
-    return pd.DataFrame({
-        "x": range(10000),
-        "y": [i * 1.5 + (i % 13) for i in range(10000)],
-        "z": [i ** 0.5 for i in range(10000)],
-    })
+    return pd.DataFrame(
+        {
+            "x": range(10000),
+            "y": [i * 1.5 + (i % 13) for i in range(10000)],
+            "z": [i**0.5 for i in range(10000)],
+        }
+    )

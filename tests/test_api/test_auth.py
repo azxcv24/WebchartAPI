@@ -49,16 +49,12 @@ def test_session_owner_check_blocks_other_caller(client, require_auth, monkeypat
         },
         "viewport": {"x_range": [0, 10]},
     }
-    create = client.post(
-        "/api/v1/sessions", json=body, headers={"X-API-Key": "test-key"}
-    )
+    create = client.post("/api/v1/sessions", json=body, headers={"X-API-Key": "test-key"})
     assert create.status_code == 201
     sid = create.json()["session_id"]
 
     # Different valid key cannot read the session
-    other = client.get(
-        f"/api/v1/sessions/{sid}", headers={"X-API-Key": "other-key"}
-    )
+    other = client.get(f"/api/v1/sessions/{sid}", headers={"X-API-Key": "other-key"})
     assert other.status_code == 403
 
 
