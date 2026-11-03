@@ -13,7 +13,6 @@ from webchart.services.data.x_domain import (
     column_kind_of,
     format_x,
     to_canonical,
-    to_native_bound,
 )
 
 NOON_UTC_NS = pd.Timestamp("2026-01-01T12:00:00Z").value
@@ -74,14 +73,6 @@ def test_canonical_scalar_matches_to_canonical_for_time():
 class TestNativeBoundAndFormat:
     naive = ColumnInfo(name="t", dtype="datetime", kind=ColumnKind.TIME)
     aware = ColumnInfo(name="t", dtype="datetime", kind=ColumnKind.TIME, timezone="Asia/Seoul")
-
-    def test_numeric_bound_unchanged(self):
-        column = ColumnInfo(name="x", dtype="float64", kind=ColumnKind.NUMERIC)
-        assert to_native_bound(1.5, column) == 1.5
-
-    def test_time_bounds_roundtrip(self):
-        assert to_native_bound(NOON_UTC_NS, self.naive) == pd.Timestamp("2026-01-01 12:00")
-        assert to_native_bound(NOON_UTC_NS, self.aware) == pd.Timestamp("2026-01-01T12:00Z")
 
     def test_format_shows_original_timezone(self):
         assert format_x(NOON_UTC_NS, self.naive) == "2026-01-01T12:00:00"

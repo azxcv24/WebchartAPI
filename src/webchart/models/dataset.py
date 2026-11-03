@@ -61,7 +61,6 @@ class ColumnInfo(BaseModel):
     # tz-aware 시간 컬럼의 원본 시간대 (예: "UTC", "+09:00"). naive 시간은 None
     timezone: str | None = None
     null_count: int = 0
-    unique_count: int | None = None
 
     @model_validator(mode="after")
     def _backfill_legacy_meta(self) -> "ColumnInfo":

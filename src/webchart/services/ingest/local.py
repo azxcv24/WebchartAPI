@@ -15,10 +15,6 @@ class LocalIngestBackend:
     def supported_protocols(self) -> list[str]:
         return ["file"]
 
-    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
-        path = Path(spec.uri.replace("file://", ""))
-        return path.exists() and path.is_file()
-
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         source_path = Path(spec.uri.replace("file://", ""))
 

@@ -57,23 +57,6 @@ class HttpIngestBackend:
     _MAX_REDIRECTS = 5
     _REDIRECT_CODES = {301, 302, 303, 307, 308}
 
-    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
-        import httpx
-
-        try:
-            guard_egress_host(urlparse(spec.uri).hostname)
-            # follow_redirects disabled: we validate each hop's host ourselves
-            async with httpx.AsyncClient(
-                follow_redirects=False, timeout=settings.connector_timeout
-            ) as client:
-                r = await client.head(
-                    spec.uri, headers=self._headers(spec), auth=self._auth(spec)
-                )
-                return r.status_code < 400 or r.status_code in self._REDIRECT_CODES
-        except Exception as e:
-            logger.debug(f"HTTP validate_source failed: {e}")
-            return False
-
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         import httpx
 

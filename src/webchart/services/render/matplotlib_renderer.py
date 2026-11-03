@@ -225,21 +225,6 @@ class MatplotlibRenderer:
         del canvas
         return buffer.getvalue()
 
-    def render(self, spec: ChartSpec, data: pd.DataFrame) -> bytes:
-        """원본 DataFrame을 집계 없이 그대로 그린다 (ChartRenderer 프로토콜).
-
-        축 범위와 눈금은 matplotlib 기본값이다. 서버의 정적 렌더는 이 경로가 아니라
-        application/static_chart.py의 집계 경로를 쓴다.
-        """
-        x_view = XRange(*spec.x_axis.range) if spec.x_axis.range else None
-        axis = spec.axis("y")
-        y_ranges: dict[AxisName, YRange] | None = {"y": YRange(*axis.range)} if axis.range else None
-        return self.render_chart(spec, raw_drawings(spec, data), x_view, y_ranges)
-
-    def supported_formats(self) -> list[str]:
-        return ["png", "svg", "webp"]
-
-
 def _axes_by_name(main: Axes, drawings: Sequence[Drawing]) -> dict[AxisName, Axes]:
     """y축 이름 → axes. y2 레이어가 있으면 x를 공유하는 두 번째 axes를 만든다."""
     axes: dict[AxisName, Axes] = {"y": main}

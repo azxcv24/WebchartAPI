@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from webchart.services.data.downsample import downsample, downsample_multi_series
+from webchart.services.data.downsample import downsample
 
 
 @pytest.fixture
@@ -57,11 +57,3 @@ class TestAverage:
         # Average of first bucket should be close to average of first 100 points
         first_bucket_mean = large_df.head(100)["y"].mean()
         assert abs(result["y"].iloc[0] - first_bucket_mean) < 1.0
-
-
-class TestMultiSeries:
-    def test_multi_series_lttb(self, large_df):
-        result = downsample_multi_series(large_df, "x", ["y", "z"], 500, algorithm="lttb")
-        assert len(result) == 500
-        assert "y" in result.columns
-        assert "z" in result.columns

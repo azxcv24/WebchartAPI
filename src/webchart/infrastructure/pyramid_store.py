@@ -236,9 +236,6 @@ class PyramidLevel:
             **{field: self.column(stat_column(series, field))[buckets] for field in _STAT_FIELDS}
         )
 
-    def has_series(self, series: str) -> bool:
-        return (self.directory / f"{stat_column(series, 'count')}.npy").exists()
-
     def column(self, name: str) -> npt.NDArray[Any]:
         return open_array(self.directory / f"{name}.npy")
 

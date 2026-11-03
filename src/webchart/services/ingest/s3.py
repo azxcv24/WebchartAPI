@@ -74,18 +74,6 @@ class S3IngestBackend:
         )
         return boto3.client(**kwargs)
 
-    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
-        def _head() -> bool:
-            bucket, key = self._parse(spec.uri)
-            self._client(spec).head_object(Bucket=bucket, Key=key)
-            return True
-
-        try:
-            return await run_in_thread(_head)
-        except Exception as e:
-            logger.debug(f"S3 validate_source failed: {e}")
-            return False
-
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         dataset_id = dest.name
         suffix = validate_remote_format(spec.uri)

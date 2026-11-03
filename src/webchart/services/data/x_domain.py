@@ -88,14 +88,6 @@ def _to_float_numpy(values: pa.Array | pa.ChunkedArray) -> npt.NDArray[np.float6
     return result
 
 
-def to_native_bound(x: float, column: ColumnInfo | None) -> Any:
-    """정규 좌표 하나 → 그 컬럼과 비교할 수 있는 원래 타입의 값 (범위 필터용)."""
-    if column is None or column.kind is not ColumnKind.TIME:
-        return x
-    timestamp = pd.Timestamp(round(x), unit="ns")
-    return timestamp.tz_localize("UTC") if column.timezone else timestamp
-
-
 def format_x(x: float, column: ColumnInfo | None) -> str:
     """정규 좌표를 사람이 읽는 문자열로 바꾼다 (호버 라벨 등).
 

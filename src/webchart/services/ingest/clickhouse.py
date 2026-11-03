@@ -56,14 +56,6 @@ class ClickHouseIngestBackend:
             "ClickHouse connector requires either options.query or options.table"
         )
 
-    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
-        try:
-            self._resolve_query(spec)
-            urlparse(spec.uri)
-            return True
-        except Exception:
-            return False
-
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         cc = require_lib("clickhouse_connect", "clickhouse")
 

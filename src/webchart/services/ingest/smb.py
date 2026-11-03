@@ -40,14 +40,6 @@ class SmbIngestBackend:
             raise ConnectorError(f"Invalid SMB URI (need smb://host/share/path): {uri}")
         return "\\\\" + host + path.replace("/", "\\")
 
-    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
-        try:
-            validate_remote_format(spec.uri)
-            self._unc_path(spec.uri)
-            return True
-        except Exception:
-            return False
-
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         smbclient = require_lib("smbclient", "connectors")
 

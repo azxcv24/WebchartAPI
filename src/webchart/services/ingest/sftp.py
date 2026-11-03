@@ -31,13 +31,6 @@ class SftpIngestBackend:
     def supported_protocols(self) -> list[str]:
         return ["sftp"]
 
-    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
-        try:
-            validate_remote_format(spec.uri)
-            return True
-        except Exception:
-            return False
-
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         asyncssh = require_lib("asyncssh", "connectors")
 

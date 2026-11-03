@@ -29,6 +29,3 @@ def get_backend(uri: str) -> IngestBackend:
     return _backends[scheme]
 
 
-def list_supported_protocols() -> list[str]:
-    """Return list of all registered protocols."""
-    return sorted(_backends.keys())

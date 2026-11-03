@@ -1,7 +1,6 @@
 """Integration tests for dataset upload lifecycle."""
 
 import io
-import json
 import time
 
 import pandas as pd

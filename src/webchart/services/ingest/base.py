@@ -10,10 +10,6 @@ from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 class IngestBackend(Protocol):
     """Protocol for data ingestion backends."""
 
-    async def validate_source(self, spec: RemoteSourceSpec) -> bool:
-        """Validate that the source is accessible."""
-        ...
-
     async def ingest_to_parquet(self, spec: RemoteSourceSpec, dest: Path) -> DatasetMeta:
         """Ingest data from source and write as partitioned Parquet."""
         ...

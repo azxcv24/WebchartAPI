@@ -30,11 +30,6 @@ class SessionNotFoundError(WebchartError):
         super().__init__(f"Session not found: {session_id}", "SESSION_NOT_FOUND")
 
 
-class RenderError(WebchartError):
-    def __init__(self, message: str):
-        super().__init__(message, "RENDER_ERROR")
-
-
 class ProtocolNotSupportedError(WebchartError):
     def __init__(self, protocol: str):
         super().__init__(f"Unsupported protocol: {protocol}", "PROTOCOL_NOT_SUPPORTED")
@@ -75,7 +70,6 @@ def webchart_error_to_http(err: WebchartError) -> HTTPException:
         "QUERY_TOO_LARGE": status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
         "DATASET_PROCESSING_ERROR": status.HTTP_422_UNPROCESSABLE_ENTITY,
         "CONNECTOR_ERROR": status.HTTP_502_BAD_GATEWAY,
-        "RENDER_ERROR": status.HTTP_500_INTERNAL_SERVER_ERROR,
     }
     return HTTPException(
         status_code=status_map.get(err.code, status.HTTP_500_INTERNAL_SERVER_ERROR),

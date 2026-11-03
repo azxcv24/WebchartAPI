@@ -3,7 +3,6 @@
 import functools
 import http.server
 import threading
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -34,8 +33,6 @@ async def test_http_download_and_convert(http_server, tmp_data_dir):
     backend = HttpIngestBackend()
     spec = RemoteSourceSpec(protocol="http", uri=f"{base_url}/data.csv")
 
-    assert await backend.validate_source(spec) is True
-
     dest = tmp_data_dir / "datasets" / "ds-http"
     meta = await backend.ingest_to_parquet(spec, dest)
     assert meta.row_count == 80
@@ -53,8 +50,7 @@ async def test_http_ssrf_guard_blocks_localhost(http_server, tmp_data_dir, monke
 
     backend = HttpIngestBackend()
     spec = RemoteSourceSpec(protocol="http", uri=f"{base_url}/data.csv")
-    # validate returns False, and ingest refuses with ConnectorError
-    assert await backend.validate_source(spec) is False
+    # 사설·루프백 주소로 가는 다운로드는 거부한다
     with pytest.raises(ConnectorError):
         await backend.ingest_to_parquet(spec, tmp_data_dir / "datasets" / "ds-ssrf")
 
@@ -66,6 +62,5 @@ async def test_http_404_raises_connector_error(http_server, tmp_data_dir):
     backend = HttpIngestBackend()
     spec = RemoteSourceSpec(protocol="http", uri=f"{base_url}/missing.csv")
 
-    assert await backend.validate_source(spec) is False
     with pytest.raises(ConnectorError):
         await backend.ingest_to_parquet(spec, tmp_data_dir / "datasets" / "ds-404")

@@ -202,24 +202,3 @@ def _average(
     return pd.DataFrame(rows)
 
 
-def downsample_multi_series(
-    df: pd.DataFrame,
-    x_column: str,
-    y_columns: list[str],
-    target_points: int,
-    algorithm: str = "lttb",
-) -> pd.DataFrame:
-    """Downsample with multiple y-columns.
-
-    For LTTB, uses the first y_column to determine point selection,
-    then includes all other columns at the selected indices.
-    For minmax and average, operates on each y_column independently
-    and merges results.
-    """
-    if algorithm == "lttb":
-        primary_y = y_columns[0]
-        result = _lttb(df, x_column, primary_y, target_points)
-        return result
-
-    # For minmax/average, use all columns together
-    return downsample(df, x_column, y_columns[0], target_points, algorithm)

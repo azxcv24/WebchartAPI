@@ -7,7 +7,6 @@
 다른 y범위로 그린 타일이 섞이지 않는다.
 """
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -268,31 +267,6 @@ def plan_frame(
 
     y_ranges = resolve_y_ranges(meta, spec, YRangePolicy.GLOBAL, probe, dpr, snap_viewport=True)
     return FramePlan(lattice, visible, prefetch, y_ranges, dpr)
-
-
-async def render_frame(
-    meta: DatasetMeta,
-    spec: ChartSpec,
-    plan: FramePlan,
-    renderer: TileRenderer | None = None,
-) -> list[RenderedTile]:
-    """프레임의 모든 타일(보이는 것 먼저)을 병렬로 그린다. 실패한 타일은 경고 후 뺀다."""
-    renderer = renderer or default_tile_renderer
-    tiles = [*plan.visible, *plan.prefetch]
-    outcomes = await asyncio.gather(
-        *(
-            renderer.render(TileRequest(meta, spec, plan.lattice, tile, plan.dpr, plan.y_ranges))
-            for tile in tiles
-        ),
-        return_exceptions=True,
-    )
-    rendered: list[RenderedTile] = []
-    for tile, outcome in zip(tiles, outcomes, strict=True):
-        if isinstance(outcome, BaseException):
-            logger.warning(f"타일 {tile.tile_id} 렌더 실패: {outcome}")
-            continue
-        rendered.append(outcome)
-    return rendered
 
 
 def bucket_layer_columns(spec: ChartSpec) -> list[str]:

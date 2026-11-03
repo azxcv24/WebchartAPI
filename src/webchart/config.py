@@ -20,13 +20,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("/data/webchart")
     max_upload_size: int = 10 * 1024 * 1024 * 1024  # 10GB
     max_xlsx_upload_size: int = 200 * 1024 * 1024  # 200MB - xlsx is not chunked
-    parquet_partition_size: str = "128MB"
     # 원본 Parquet 로우그룹 크기(행). 범위 읽기의 최소 단위라 작을수록 깊은 줌 읽기가 싸고,
     # 클수록 압축·스캔 효율이 좋다. 2^17 = 131,072행.
     ingest_row_group_rows: int = 131_072
-
-    # Query guards
-    max_query_rows: int = 5_000_000  # cap on read_window result size
 
     # Remote ingest connectors
     connector_timeout: int = 300  # seconds, per remote download/query
@@ -55,8 +51,6 @@ class Settings(BaseSettings):
     # 0이면 렌더 스레드에서 그린다 (테스트·작은 서버).
     paint_processes: int = Field(default_factory=lambda: min(8, max(1, (os.cpu_count() or 2) // 2)))
     tile_size: int = 512
-    default_chart_width: int = 1200
-    default_chart_height: int = 600
 
     # 프로세스 내 L1 타일 캐시 상한 (바이트). Redis(L2) 앞에서 같은 워커의 재요청을 받는다.
     tile_memory_cache_bytes: int = 512 * 1024**2
