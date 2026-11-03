@@ -1,5 +1,6 @@
 """FastAPI 애플리케이션 팩토리와 lifespan(시작·종료 처리)."""
 
+import importlib.metadata
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -56,11 +57,19 @@ async def lifespan(app: FastAPI):
     await close_redis()
 
 
+def _package_version() -> str:
+    """설치된 패키지 버전 (pyproject.toml). 설치하지 않고 소스로 돌리면 "dev"."""
+    try:
+        return importlib.metadata.version("webchart")
+    except importlib.metadata.PackageNotFoundError:
+        return "dev"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="WebchartAPI",
         description="대용량 데이터 서버사이드 차트 시각화 API",
-        version="0.1.0",
+        version=_package_version(),
         lifespan=lifespan,
     )
 

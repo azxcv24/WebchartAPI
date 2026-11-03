@@ -4,9 +4,24 @@ build-backend = "hatchling.build"
 
 [project]
 name = "webchart"
-version = "0.1.0"
-description = "대용량 데이터 서버사이드 차트 시각화 API"
+version = "0.2.0"
+description = "대용량 데이터를 왜곡 없이 그리는 서버사이드 차트 엔진 (픽셀 정렬 M4 집계, 타일 스트리밍)"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "azxcv24" }]
 requires-python = ">=3.11"
+keywords = ["chart", "visualization", "large-data", "m4", "downsampling", "fastapi", "tiles"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
@@ -22,6 +37,11 @@ dependencies = [
     "python-multipart>=0.0.9",
     "httpx>=0.27.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/azxcv24/WebchartAPI"
+Repository = "https://github.com/azxcv24/WebchartAPI"
+Issues = "https://github.com/azxcv24/WebchartAPI/issues"
 
 [project.optional-dependencies]
 connectors = [

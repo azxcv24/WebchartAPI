@@ -70,21 +70,24 @@ crosshair · range_stats · data_appended.
 ## Common Commands
 
 ```bash
-# Run dev server
-uvicorn src.webchart.main:app --reload --host 0.0.0.0 --port 8000
+# 설치 (개발용)
+pip install -e ".[dev]"
 
-# Run tests
+# 개발 서버 (Redis 필요)
+uvicorn webchart.main:app --reload --host 0.0.0.0 --port 8000
+
+# 테스트 (오라클 포함)
 pytest tests/ -v
 
-# Run with docker
+# Docker
 docker-compose up -d
 
-# Type checking
-mypy src/webchart/
+# 타입 검사 (domain은 strict)
+mypy --strict src/webchart/domain
 
-# Linting
-ruff check src/
-ruff format src/
+# Lint
+ruff check src/ tests/ scripts/
+ruff format src/ tests/ scripts/
 ```
 
 ## v2 (무왜곡 엔진) — 반드시 먼저 읽을 것
@@ -99,21 +102,22 @@ ruff format src/
 
 - 모든 API 엔드포인트는 `/api/v1/` 접두사 사용
 - Pydantic v2 모델 사용 (request/response schemas)
-- 비동기 I/O 우선, CPU-bound 작업은 ThreadPoolExecutor 사용
+- 비동기 I/O 우선. 막히는 작업은 `run_in_thread`(렌더 스레드 풀), matplotlib 그리기는 `paint`(프로세스 풀)
 - 데이터 수집 커넥터는 `IngestBackend` 프로토콜 구현
-- 차트 렌더러는 `ChartRenderer` 프로토콜 구현
+- 새 차트 종류는 `application/layers.py`의 PROJECTIONS와 `services/render/painters.py`의 PAINTERS에 등록
 - 캐시 키 형식: `{type}:{dataset_id}:{...}` (타일: `tile:{dataset}:{data_version}:{그림 해시}:{z}-{i}@{dpr}x:e{세대}`)
 - 에러 응답은 `core/errors.py`의 커스텀 예외 계층 사용
 - 환경 변수 기반 설정 (Pydantic Settings)
 
 ## Environment Variables
 
+모든 설정은 `WEBCHART_` 접두사 환경변수로 바꾼다. 전체 목록과 설명은 `src/webchart/config.py`와 README에 있다.
+
 ```
 WEBCHART_REDIS_URL=redis://localhost:6379/0
-WEBCHART_DATA_DIR=/data/webchart          # Parquet 저장 경로
-WEBCHART_MAX_UPLOAD_SIZE=10737418240      # 10GB
-WEBCHART_RENDER_POOL_SIZE=8               # 동시 렌더링 스레드 수
-WEBCHART_TILE_SIZE=512                    # 타일 픽셀 크기
-WEBCHART_TILE_CACHE_TTL=3600              # 타일 캐시 TTL (초)
-WEBCHART_SESSION_TTL=900                  # 세션 TTL (초)
+WEBCHART_DATA_DIR=/data/webchart          # 원본 Parquet·피라미드 저장 경로
+WEBCHART_TILE_SIZE=512                    # 타일 픽셀 크기 (2의 거듭제곱)
+WEBCHART_PAINT_PROCESSES=8                # matplotlib 그리기 프로세스 수 (0이면 스레드)
+WEBCHART_API_KEYS='["key1"]'              # 비우면 인증 꺼짐 (개발용)
+WEBCHART_LOCAL_INGEST_ROOT=/srv/shared    # file:// 인제스트 허용 디렉터리 (비우면 거부)
 ```

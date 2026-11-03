@@ -7,7 +7,7 @@
 - **인터랙션은 스트리밍이다.** 줌·이동·호버·구간 통계를 WebSocket으로 그때그때 받아 온다.
 - **"왜곡 없음"은 테스트로 강제한다.** 서버가 그린 그림을 원본 전체를 그린 그림과 픽셀 단위로 비교한다(오라클 테스트).
 
-설계와 진행 기록은 [docs/improvement-plan.md](docs/improvement-plan.md)에 있다.
+설계 근거, 측정 기록, 결정 사항은 [docs/improvement-plan.md](docs/improvement-plan.md)에 있다.
 
 ---
 
@@ -83,16 +83,35 @@ cache    L1 프로세스 메모리 → L2 Redis (데코레이터)   application/
 
 ## 빠르게 써 보기
 
+Python 3.11 이상과 Redis가 필요하다.
+
 ```bash
-pip install -e ".[dev]"
-uvicorn src.webchart.main:app --reload --host 0.0.0.0 --port 8000   # Redis 필요
-# 또는
+# Docker로 (API + Redis)
 docker-compose up -d
+
+# 또는 직접 설치
+pip install -e .                    # 원격 커넥터(S3·FTP·SFTP·SMB·ClickHouse)까지: ".[connectors]"
+docker run -d -p 6379:6379 redis:7-alpine
+WEBCHART_DATA_DIR=./data uvicorn webchart.main:app --host 0.0.0.0 --port 8000
 ```
 
-1. 업로드: `POST /api/v1/datasets/upload` (CSV, Parquet, JSON, Excel, TSV)
-2. 피라미드(선택, 큰 데이터): `POST /api/v1/datasets/{id}/pyramid {"x_column": "ts"}`
-3. 브라우저에서 `http://localhost:8000/viewer/`: 드래그 이동 · 휠 줌 · Shift+드래그 구간 통계
+```bash
+# 1. 업로드 (CSV, Parquet, JSON, Excel, TSV) → 백그라운드에서 정렬된 Parquet으로 변환
+curl -F file=@prices.csv http://localhost:8000/api/v1/datasets/upload
+# {"dataset_id": "3f2c…", "status": "ingesting"}
+
+# 2. (큰 데이터라면) 피라미드 빌드: 줌아웃 화면을 미리 집계한 레벨에서 정확하게 그린다
+curl -X POST http://localhost:8000/api/v1/datasets/3f2c…/pyramid \
+     -H 'Content-Type: application/json' -d '{"x_column": "ts"}'
+
+# 3. 이미지 한 장
+curl -X POST http://localhost:8000/api/v1/charts/render -H 'Content-Type: application/json' \
+     -d '{"dataset_id": "3f2c…", "x_axis": {"column": "ts"},
+          "layers": [{"kind": "line", "column": "price"}]}' -o chart.png
+```
+
+4. 인터랙티브: 브라우저에서 `http://localhost:8000/viewer/`를 연다. 드래그로 이동, 휠로 줌, Shift+드래그로 구간 통계를 본다.
+   뷰어는 `src/webchart/web/webchart.js` 하나(프레임워크 없음, 약 14KB)라 다른 페이지에도 그대로 넣을 수 있다.
 
 ### 차트 명세 (ChartSpec v2)
 
@@ -174,7 +193,31 @@ docker-compose up -d
 | `PYRAMID_MAX_LEVEL` / `PYRAMID_MAX_BYTES` | 24 / 4GB | 피라미드 깊이·크기 상한 |
 | `EXACT_RAW_ROW_BUDGET` | 20,000,000 | 정적 렌더에서 원본을 직접 집계할 행 수 상한 |
 | `INGEST_ROW_GROUP_ROWS` | 131,072 | 원본 로우그룹 크기 |
-| `API_KEYS`, `EMBED_SECRET` | 비움 | 인증 키, 임베드 토큰 비밀값 |
+| `MAX_UPLOAD_SIZE` | 10GB | 업로드·원격 다운로드 크기 상한 |
+| `API_KEYS` | 비움 | API 키 목록 (JSON 배열). 비우면 인증 꺼짐 (개발용) |
+| `EMBED_SECRET` | 비움 | 임베드 토큰 HMAC 비밀값. 비우면 `API_KEYS`에서 만든다 |
+| `CORS_ALLOW_ORIGINS` | `["http://localhost:3000"]` | 허용할 브라우저 출처 |
+| `RATE_LIMIT_PER_MINUTE` | 120 | API 키(없으면 IP)별 분당 요청 수 |
+| `BLOCK_PRIVATE_EGRESS` | `true` | 원격 커넥터가 사설·루프백 주소에 접속하지 못하게 막는다 (SSRF 방지) |
+| `LOCAL_INGEST_ROOT` | 비움 | `file://` 인제스트가 읽을 수 있는 디렉터리. 비우면 `file://` 거부 |
+
+전체 목록과 설명은 [src/webchart/config.py](src/webchart/config.py)에 있다.
+
+---
+
+## 보안
+
+공개된 곳에 띄우기 전에 확인할 것.
+
+- **인증을 켠다.** `WEBCHART_API_KEYS`가 비어 있으면 누구나 업로드·조회·삭제할 수 있다.
+- **원격 커넥터**는 서버가 대신 외부에 접속하는 기능이다.
+  - 기본으로 사설·루프백·링크로컬 주소를 막는다(`BLOCK_PRIVATE_EGRESS`). 내부 MinIO처럼 의도한 경우에만 끈다.
+  - HTTP 리다이렉트가 다른 호스트로 가면 인증 헤더를 보내지 않는다.
+- **`file://` 인제스트**는 `LOCAL_INGEST_ROOT`로 지정한 디렉터리 안만 읽는다(기본 꺼짐).
+- **브라우저 WebSocket**은 헤더를 붙일 수 없어 API 키를 `?api_key=` 쿼리로도 받는다. 이 값은 프록시·접근 로그에 남을 수 있으니, 공개 환경에서는 로그에서 쿼리를 지우거나 짧게 쓰는 키를 쓴다.
+- **임베드·타일 URL**에는 API 키 대신 차트 하나에만 유효한 HMAC 토큰이 붙는다. 키를 바꾸면 기존 URL이 무효가 되므로 운영에서는 `EMBED_SECRET`을 따로 지정한다.
+
+보안 문제를 발견하면 공개 이슈 대신 저장소 관리자에게 먼저 알려 주면 좋겠다.
 
 ---
 
@@ -204,4 +247,32 @@ PYTHONPATH=src python scripts/bench/bench_pipeline.py --rows 20000000 --series 2
 PYTHONPATH=src python scripts/bench/bench_render_parallelism.py
 ```
 
-`tests/oracle/`는 합성 데이터(스파이크, 결측, 불규칙 간격, 다중 시리즈, 시간축)로 서버 결과를 원본 전체 렌더와 비교한다. 비교 규칙(세로 1px, 선 굵기 번짐 가로 1열)은 계획 문서 8장에 있다.
+`tests/oracle/`는 합성 데이터(스파이크, 결측, 불규칙 간격, 다중 시리즈, 시간축, 실시간 추가)로 서버 결과를 원본 전체 렌더와 비교한다. 비교 규칙(세로 1px, 선 굵기 번짐 가로 1열)은 계획 문서 8장에 있다.
+
+기여할 때
+- 렌더 경로(집계·투영·그리기)를 바꾸면 오라클을 반드시 돌린다. 근사가 생기면 응답에 `exact=false`로 드러나야 한다.
+- 코드 컨벤션은 계획 문서 6장을 따른다: 주석·docstring은 한국어, 식별자는 영어, 이름에 단위(`width_px`, `x_ns`), 범위는 반열린 구간 `[start, end)`.
+- `domain/`은 numpy만 쓰고 `mypy --strict`를 통과해야 한다.
+
+---
+
+## 라이선스
+
+[MIT](LICENSE). 상업적 이용을 포함해 자유롭게 쓰고 고치고 배포할 수 있다. 복사본에는 저작권·라이선스 문구를 남겨야 한다.
+
+포크하거나 일부를 가져다 쓸 때 이 저장소(https://github.com/azxcv24/WebchartAPI)를 출처로 밝혀 주면 고맙겠다 (라이선스 의무가 아니라 부탁이다).
+
+### 함께 쓰는 오픈소스와 참고한 연구
+
+이 프로젝트는 다음 오픈소스 위에서 만들어졌다. 각 라이선스는 해당 프로젝트를 따른다.
+
+| 프로젝트 | 쓰는 곳 | 라이선스 |
+|---|---|---|
+| [FastAPI](https://github.com/fastapi/fastapi), [Starlette](https://github.com/encode/starlette), [Pydantic](https://github.com/pydantic/pydantic), [Uvicorn](https://github.com/encode/uvicorn) | API 서버, WebSocket, 설정 | MIT / BSD-3-Clause |
+| [Apache Arrow (pyarrow)](https://github.com/apache/arrow) | Parquet 범위 읽기, 정규 좌표 변환 | Apache-2.0 |
+| [NumPy](https://github.com/numpy/numpy), [pandas](https://github.com/pandas-dev/pandas), [Dask](https://github.com/dask/dask) | 집계 커널, 인제스트 | BSD-3-Clause |
+| [Matplotlib](https://github.com/matplotlib/matplotlib), [Pillow](https://github.com/python-pillow/Pillow) | 그리기, PNG 인코딩 | Matplotlib License (PSF 기반) / MIT-CMU |
+| [redis-py](https://github.com/redis/redis-py), [HTTPX](https://github.com/encode/httpx) | 캐시·세션, HTTP 커넥터 | MIT / BSD-3-Clause |
+
+- **M4 집계**: U. Jugel, Z. Jerzak, G. Hackenbroich, V. Markl, "M4: A Visualization-Oriented Time Series Data Aggregation", *PVLDB* 7(10), 2014.
+- **밀도 정규화(eq_hist)**는 [Datashader](https://github.com/holoviz/datashader)의 방식을 참고했다.
