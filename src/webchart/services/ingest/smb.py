@@ -5,7 +5,6 @@ creds:   username, password, [domain]
 options: port (기본 445)
 """
 
-import logging
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -14,13 +13,12 @@ from webchart.core.errors import ConnectorError, WebchartError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
     copy_capped,
+    guard_egress_host,
     require_lib,
     temp_download_path,
     validate_remote_format,
 )
 from webchart.services.ingest.upload import convert_to_parquet
-
-logger = logging.getLogger("webchart.ingest.smb")
 
 
 class SmbIngestBackend:
@@ -46,6 +44,7 @@ class SmbIngestBackend:
         dataset_id = dest.name
         suffix = validate_remote_format(spec.uri)
         temp_path = temp_download_path(dataset_id, suffix)
+        guard_egress_host(urlparse(spec.uri).hostname)
         unc = self._unc_path(spec.uri)
 
         creds = spec.credentials
@@ -65,7 +64,7 @@ class SmbIngestBackend:
         def _download() -> None:
             try:
                 with smbclient.open_file(unc, mode="rb", **open_kwargs) as src:
-                    copy_capped(src, temp_path, suffix, spec.uri)
+                    copy_capped(src, temp_path, suffix)
             except WebchartError:
                 temp_path.unlink(missing_ok=True)
                 raise

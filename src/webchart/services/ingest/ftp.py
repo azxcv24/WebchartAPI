@@ -4,7 +4,6 @@ URI:     ftp://host[:port]/path/file.csv
 creds:   username, password (없으면 anonymous)
 """
 
-import logging
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -13,13 +12,12 @@ from webchart.core.errors import ConnectorError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
     enforce_size,
+    guard_egress_host,
     require_lib,
     temp_download_path,
     validate_remote_format,
 )
 from webchart.services.ingest.upload import convert_to_parquet
-
-logger = logging.getLogger("webchart.ingest.ftp")
 
 
 class FtpIngestBackend:
@@ -43,6 +41,7 @@ class FtpIngestBackend:
         password = spec.credentials.get("password", "")
         remote_path = unquote(parsed.path)
 
+        guard_egress_host(host)
         if not host or not remote_path:
             raise ConnectorError(f"Invalid FTP URI: {spec.uri}")
 
@@ -55,7 +54,7 @@ class FtpIngestBackend:
 
         # aioftp에는 전송 도중 끊을 간단한 훅이 없어, 다 받은 뒤 크기 상한을 검사한다.
         try:
-            enforce_size(temp_path.stat().st_size, suffix, spec.uri)
+            enforce_size(temp_path.stat().st_size, suffix)
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise

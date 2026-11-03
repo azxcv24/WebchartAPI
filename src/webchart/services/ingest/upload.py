@@ -4,7 +4,6 @@ HTTP 업로드와 모든 인제스트 커넥터가 결국 이 모듈의 convert_
 write_table_to_parquet으로 데이터셋을 만든다. 상태는 데이터셋 디렉터리의 meta.json에 둔다.
 """
 
-import logging
 import uuid
 from pathlib import Path
 
@@ -25,8 +24,6 @@ from webchart.services.ingest.time_columns import (
     detect_time_columns,
     parse_time_columns,
 )
-
-logger = logging.getLogger("webchart.ingest.upload")
 
 CHUNK_SIZE = 64 * 1024 * 1024  # 업로드 읽기 단위, 64 MiB
 

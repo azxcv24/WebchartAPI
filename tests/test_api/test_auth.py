@@ -73,3 +73,17 @@ def test_rate_limit_returns_429(client, monkeypatch):
     r = client.get("/api/v1/datasets")
     assert r.status_code == 429
     assert "Retry-After" in r.headers
+
+
+def test_rate_limit_cannot_be_dodged_with_made_up_keys(client, require_auth, monkeypatch):
+    """유효하지 않은 키는 IP 버킷으로 센다. 요청마다 키를 바꿔도 제한에 걸린다."""
+    monkeypatch.setattr(settings, "rate_limit_enabled", True)
+    monkeypatch.setattr(settings, "rate_limit_per_minute", 3)
+
+    statuses = [
+        client.get("/api/v1/datasets", headers={"X-API-Key": f"fake-{i}"}).status_code
+        for i in range(4)
+    ]
+    assert statuses == [401, 401, 401, 429]
+    # 유효한 키는 자기 버킷을 쓰므로 막히지 않는다
+    assert client.get("/api/v1/datasets", headers={"X-API-Key": require_auth}).status_code == 200

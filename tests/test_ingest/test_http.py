@@ -64,3 +64,48 @@ async def test_http_404_raises_connector_error(http_server, tmp_data_dir):
 
     with pytest.raises(ConnectorError):
         await backend.ingest_to_parquet(spec, tmp_data_dir / "datasets" / "ds-404")
+
+
+async def test_credentials_are_not_forwarded_to_another_host(tmp_path, tmp_data_dir):
+    """다른 호스트로 리다이렉트되면 Authorization 헤더를 보내지 않는다."""
+    seen: dict[str, str | None] = {}
+
+    class Target(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - http.server 규약
+            seen["authorization"] = self.headers.get("Authorization")
+            body = b"x,y\n1,2\n"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+    target_url = f"http://127.0.0.1:{target.server_address[1]}/data.csv"
+
+    class Redirect(Target):
+        def do_GET(self):  # noqa: N802
+            seen["first"] = self.headers.get("Authorization")
+            self.send_response(302)
+            self.send_header("Location", target_url)
+            self.end_headers()
+
+    origin = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+    for server in (target, origin):
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        spec = RemoteSourceSpec(
+            protocol="http",
+            uri=f"http://127.0.0.1:{origin.server_address[1]}/data.csv",
+            credentials={"bearer": "secret-token"},
+        )
+        meta = await HttpIngestBackend().ingest_to_parquet(spec, tmp_data_dir / "datasets" / "r")
+    finally:
+        target.shutdown()
+        origin.shutdown()
+
+    assert meta.row_count == 1
+    assert seen["first"] == "Bearer secret-token"
+    assert seen["authorization"] is None

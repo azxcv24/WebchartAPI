@@ -225,6 +225,7 @@ class MatplotlibRenderer:
         del canvas
         return buffer.getvalue()
 
+
 def _axes_by_name(main: Axes, drawings: Sequence[Drawing]) -> dict[AxisName, Axes]:
     """y축 이름 → axes. y2 레이어가 있으면 x를 공유하는 두 번째 axes를 만든다."""
     axes: dict[AxisName, Axes] = {"y": main}

@@ -6,7 +6,6 @@ options: known_hosts — 호스트 키 검증은 기본으로 켜져 있다. kno
          주거나, "insecure"로 명시적으로 끌 수 있다
 """
 
-import logging
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -15,13 +14,12 @@ from webchart.core.errors import ConnectorError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
     enforce_size,
+    guard_egress_host,
     require_lib,
     temp_download_path,
     validate_remote_format,
 )
 from webchart.services.ingest.upload import convert_to_parquet
-
-logger = logging.getLogger("webchart.ingest.sftp")
 
 
 class SftpIngestBackend:
@@ -42,6 +40,7 @@ class SftpIngestBackend:
         host = parsed.hostname
         port = parsed.port or 22
         remote_path = unquote(parsed.path)
+        guard_egress_host(host)
         if not host or not remote_path:
             raise ConnectorError(f"Invalid SFTP URI: {spec.uri}")
 
@@ -81,7 +80,7 @@ class SftpIngestBackend:
 
         # sftp.get은 전송 도중 끊을 수 없어, 다 받은 뒤 크기 상한을 검사한다.
         try:
-            enforce_size(temp_path.stat().st_size, suffix, spec.uri)
+            enforce_size(temp_path.stat().st_size, suffix)
         except Exception:
             temp_path.unlink(missing_ok=True)
             raise

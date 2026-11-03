@@ -9,7 +9,6 @@ creds:   access_key, secret_key, [session_token]
 options: endpoint_url, region, addressing_style ('path'|'virtual'|'auto')
 """
 
-import logging
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
@@ -23,8 +22,6 @@ from webchart.services.ingest.common import (
     validate_remote_format,
 )
 from webchart.services.ingest.upload import convert_to_parquet
-
-logger = logging.getLogger("webchart.ingest.s3")
 
 
 class S3IngestBackend:
@@ -93,7 +90,7 @@ class S3IngestBackend:
             try:
                 # 내려받기 전에 ContentLength로 너무 큰 객체를 거부한다.
                 head = client.head_object(Bucket=bucket, Key=key)
-                enforce_size(int(head.get("ContentLength", 0)), suffix, spec.uri)
+                enforce_size(int(head.get("ContentLength", 0)), suffix)
                 client.download_file(bucket, key, str(temp_path))
             except WebchartError:
                 temp_path.unlink(missing_ok=True)

@@ -10,9 +10,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     model_config = {"env_prefix": "WEBCHART_"}
 
-    # 서버 바인드 주소·포트와 디버그 로그
-    host: str = "0.0.0.0"
-    port: int = 8000
+    # 디버그 로그 (바인드 주소·포트는 uvicorn 실행 인자로 정한다)
     debug: bool = False
 
     # 타일 캐시(L2)와 세션 상태를 두는 Redis
@@ -28,6 +26,9 @@ class Settings(BaseSettings):
     ingest_row_group_rows: int = 131_072
 
     # 원격 수집 커넥터
+    # file:// 인제스트가 읽을 수 있는 디렉터리. None이면 file:// 인제스트를 거부한다
+    # (서버 디스크의 임의 파일을 데이터셋으로 읽어 갈 수 없게).
+    local_ingest_root: Path | None = None
     connector_timeout: int = 300  # 원격 다운로드·쿼리 한 번의 제한 시간 (초)
     clickhouse_max_rows: int = 10_000_000  # ClickHouse 쿼리 한 번에 가져올 행 수 상한
 

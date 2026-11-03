@@ -65,7 +65,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def _client_key(self, request: Request) -> str:
         api_key = request.headers.get(settings.api_key_header)
-        if api_key:
+        # 유효한 키만 별도 버킷을 받는다. 아무 키나 붙여 IP 제한을 우회하지 못하게 한다.
+        from webchart.api.auth import key_is_valid
+
+        if api_key and settings.api_keys and key_is_valid(api_key):
             # 원본 키가 dict 키로 메모리에 남지 않도록 해시한다.
             from webchart.api.auth import hash_api_key
 

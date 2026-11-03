@@ -60,11 +60,11 @@ def _lttb(
     """
     n = len(df)
     if target_points < 3:
-        # 삼각형을 만들 수 없다: 양 끝(과 가능하면 가운데 하나)만 남긴다
+        # 삼각형을 만들 수 없다: 양 끝점만 남긴다 (1개면 첫 점)
         if n <= target_points:
             return df.copy()
-        idx = list({0, n // 2, n - 1})[:target_points]
-        return df.iloc[sorted(idx)].reset_index(drop=True)
+        idx = [0] if target_points == 1 else [0, n - 1]
+        return df.iloc[idx].reset_index(drop=True)
 
     x = to_canonical(df[x_column])  # 시간 x축도 삼각형 면적을 계산할 수 있게 수치로 바꾼다
     y = df[y_column].to_numpy(dtype=np.float64, copy=False)

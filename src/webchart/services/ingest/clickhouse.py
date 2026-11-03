@@ -8,7 +8,6 @@ creds:   username, password
 options: query(SQL) 또는 table(-> SELECT * FROM table), limit, secure
 """
 
-import logging
 import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
@@ -17,10 +16,8 @@ from webchart.config import settings
 from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import ConnectorError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
-from webchart.services.ingest.common import require_lib
+from webchart.services.ingest.common import guard_egress_host, require_lib
 from webchart.services.ingest.upload import write_table_to_parquet
-
-logger = logging.getLogger("webchart.ingest.clickhouse")
 
 # table 또는 db.table. 따옴표·공백·세미콜론 없는 단순 식별자만 허용한다.
 _TABLE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -61,6 +58,7 @@ class ClickHouseIngestBackend:
         sql, name = self._resolve_query(spec)
 
         parsed = urlparse(spec.uri)
+        guard_egress_host(parsed.hostname)
         secure = spec.protocol == "clickhouses" or spec.options.get("secure") == "true"
         port = parsed.port or (8443 if secure else 8123)
         database = unquote(parsed.path).lstrip("/") or spec.options.get("database", "default")

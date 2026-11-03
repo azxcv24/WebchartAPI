@@ -7,7 +7,6 @@ creds:   bearer | token (Authorization: Bearer ...), 또는 username/password (B
 options: header_<Name> 항목은 그대로 요청 헤더가 된다
 """
 
-import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -22,8 +21,6 @@ from webchart.services.ingest.common import (
     validate_remote_format,
 )
 from webchart.services.ingest.upload import convert_to_parquet
-
-logger = logging.getLogger("webchart.ingest.http")
 
 _STREAM_CHUNK = 1024 * 1024  # 1 MiB
 
@@ -75,10 +72,17 @@ class HttpIngestBackend:
                 follow_redirects=False, timeout=settings.connector_timeout
             ) as client:
                 url = spec.uri
+                origin = urlparse(spec.uri).netloc
                 for _ in range(self._MAX_REDIRECTS + 1):
                     guard_egress_host(urlparse(url).hostname)
+                    # 인증 정보는 처음 요청한 호스트에만 보낸다. 다른 호스트로 리다이렉트되면
+                    # 헤더·Basic 인증을 떼어 자격 증명이 제3자에게 새지 않게 한다.
+                    is_same_origin = urlparse(url).netloc == origin
                     async with client.stream(
-                        "GET", url, headers=self._headers(spec), auth=self._auth(spec)
+                        "GET",
+                        url,
+                        headers=self._headers(spec) if is_same_origin else {},
+                        auth=self._auth(spec) if is_same_origin else None,
                     ) as resp:
                         if resp.status_code in self._REDIRECT_CODES:
                             location = resp.headers.get("location")

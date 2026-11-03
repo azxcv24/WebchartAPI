@@ -7,7 +7,6 @@ convert_to_parquet을 재사용한다. 여기에는 그 공통 단계인 URI 해
 
 import importlib
 import ipaddress
-import logging
 import socket
 from pathlib import Path
 from types import ModuleType
@@ -15,8 +14,6 @@ from urllib.parse import unquote, urlparse
 
 from webchart.config import settings
 from webchart.core.errors import ConnectorError, UnsupportedFormatError
-
-logger = logging.getLogger("webchart.ingest.connectors")
 
 
 def _is_blocked_ip(ip: str) -> bool:
@@ -87,7 +84,7 @@ def size_limit_for(suffix: str) -> int:
     return settings.max_upload_size
 
 
-def enforce_size(num_bytes: int, suffix: str, uri: str) -> None:
+def enforce_size(num_bytes: int, suffix: str) -> None:
     """num_bytes가 상한을 넘으면 FileTooLargeError를 낸다."""
     from webchart.core.errors import FileTooLargeError
 
@@ -96,7 +93,7 @@ def enforce_size(num_bytes: int, suffix: str, uri: str) -> None:
         raise FileTooLargeError(num_bytes, limit)
 
 
-def copy_capped(src, dst_path: Path, suffix: str, uri: str, chunk: int = 1 << 20) -> int:
+def copy_capped(src, dst_path: Path, suffix: str, chunk: int = 1 << 20) -> int:
     """파일 객체 src를 dst_path로 chunk 바이트씩 복사하고 쓴 바이트 수를 돌려준다.
 
     상한을 넘는 순간 멈추고, 쓰다 만 파일을 지운 뒤 FileTooLargeError를 낸다.
