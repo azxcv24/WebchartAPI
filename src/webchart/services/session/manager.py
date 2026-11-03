@@ -1,4 +1,4 @@
-"""Session lifecycle management."""
+"""인터랙티브 차트 세션의 생성·조회·갱신·종료. 상태는 Redis에 TTL과 함께 둔다."""
 
 import logging
 import uuid
@@ -18,7 +18,7 @@ async def create_session(
     viewport: ViewportWindow,
     owner_key_hash: str | None = None,
 ) -> SessionState:
-    """Create a new interactive chart session."""
+    """새 세션을 만들어 Redis에 저장한다."""
     session_id = str(uuid.uuid4())
 
     state = SessionState(
@@ -36,7 +36,7 @@ async def create_session(
 
 
 async def get_session(session_id: str) -> SessionState:
-    """Retrieve session state from cache."""
+    """세션 상태를 읽는다. 읽을 때마다 TTL을 다시 늘린다."""
     data = await redis_cache.get_session(session_id)
     if data is None:
         raise SessionNotFoundError(session_id)
@@ -46,7 +46,7 @@ async def get_session(session_id: str) -> SessionState:
 
 
 async def update_viewport(session_id: str, viewport: ViewportWindow) -> SessionState:
-    """Update session viewport and refresh TTL."""
+    """화면 상태를 바꾸고 마지막 활동 시각을 갱신한다."""
     state = await get_session(session_id)
     state.viewport = viewport
     state.last_active = datetime.now(UTC)
@@ -56,6 +56,6 @@ async def update_viewport(session_id: str, viewport: ViewportWindow) -> SessionS
 
 
 async def close_session(session_id: str) -> None:
-    """Close and clean up a session."""
+    """세션 상태를 지운다."""
     await redis_cache.delete_session(session_id)
     logger.info(f"Closed session {session_id}")

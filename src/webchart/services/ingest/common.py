@@ -1,9 +1,8 @@
-"""Shared utilities for remote ingest connectors.
+"""원격 인제스트 커넥터 공용 유틸리티.
 
-The file-based connectors (S3, HTTP, FTP, SFTP, SMB) all follow the same
-shape: download the remote object to a local temp file, then reuse
-convert_to_parquet. These helpers cover URI parsing, format validation,
-temp-path allocation, and optional-dependency loading.
+파일 커넥터(S3, HTTP, FTP, SFTP, SMB)는 모두 원격 객체를 로컬 임시 파일로 내려받은 뒤
+convert_to_parquet을 재사용한다. 여기에는 그 공통 단계인 URI 해석, 형식 검사, 임시 경로
+할당, 크기 상한, SSRF 방어, 선택 의존성 로딩이 있다.
 """
 
 import importlib
@@ -21,10 +20,11 @@ logger = logging.getLogger("webchart.ingest.connectors")
 
 
 def _is_blocked_ip(ip: str) -> bool:
+    """내부망으로 향하는 주소(사설·루프백·링크로컬·예약·멀티캐스트·미지정)이면 True다."""
     try:
         addr = ipaddress.ip_address(ip)
     except ValueError:
-        return True  # unparseable -> refuse
+        return True  # 해석할 수 없는 주소는 거부한다
     return (
         addr.is_private
         or addr.is_loopback
@@ -36,10 +36,11 @@ def _is_blocked_ip(ip: str) -> bool:
 
 
 def guard_egress_host(host: str | None) -> None:
-    """Refuse hosts that resolve to private/loopback/link-local addresses.
+    """내부망 주소로 해석되는 호스트를 거부한다.
 
-    Mitigates SSRF (e.g. cloud metadata at 169.254.169.254, internal
-    services). No-op when settings.block_private_egress is False.
+    SSRF(클라우드 메타데이터 169.254.169.254, 내부 서비스 등) 완화용이다. 해석된 주소가
+    하나라도 막힌 대역이면 거부한다. settings.block_private_egress가 False면 아무것도
+    하지 않는다.
     """
     if not settings.block_private_egress:
         return
@@ -59,13 +60,13 @@ def guard_egress_host(host: str | None) -> None:
 
 
 def remote_suffix(uri: str) -> str:
-    """Lower-cased file extension from a URI path (e.g. '.csv')."""
+    """URI 경로의 확장자를 소문자로 돌려준다 (예: '.csv')."""
     path = urlparse(uri).path
     return Path(unquote(path)).suffix.lower()
 
 
 def validate_remote_format(uri: str) -> str:
-    """Ensure the URI points at a supported file type before downloading."""
+    """내려받기 전에 URI가 지원 형식을 가리키는지 확인하고 확장자를 돌려준다."""
     suffix = remote_suffix(uri)
     if suffix not in settings.allowed_upload_extensions:
         raise UnsupportedFormatError(suffix or "(none)")
@@ -73,21 +74,21 @@ def validate_remote_format(uri: str) -> str:
 
 
 def temp_download_path(dataset_id: str, suffix: str) -> Path:
-    """Local path under uploads/ to stream a remote object into."""
+    """원격 객체를 받아 둘 uploads/ 아래 로컬 경로. 부모 디렉터리를 만들어 둔다."""
     p = settings.data_dir / "uploads" / f"{dataset_id}{suffix}"
     p.parent.mkdir(parents=True, exist_ok=True)
     return p
 
 
 def size_limit_for(suffix: str) -> int:
-    """Download size cap; xlsx is tighter because parsing is not chunked."""
+    """내려받기 크기 상한(바이트). xlsx는 청크 단위로 파싱할 수 없어 더 작게 잡는다."""
     if suffix == ".xlsx":
         return min(settings.max_upload_size, settings.max_xlsx_upload_size)
     return settings.max_upload_size
 
 
 def enforce_size(num_bytes: int, suffix: str, uri: str) -> None:
-    """Raise FileTooLargeError if a downloaded object exceeds the cap."""
+    """num_bytes가 상한을 넘으면 FileTooLargeError를 낸다."""
     from webchart.core.errors import FileTooLargeError
 
     limit = size_limit_for(suffix)
@@ -96,10 +97,9 @@ def enforce_size(num_bytes: int, suffix: str, uri: str) -> None:
 
 
 def copy_capped(src, dst_path: Path, suffix: str, uri: str, chunk: int = 1 << 20) -> int:
-    """Stream a file-like `src` to dst_path, aborting if the size cap is hit.
+    """파일 객체 src를 dst_path로 chunk 바이트씩 복사하고 쓴 바이트 수를 돌려준다.
 
-    Deletes the partial file and raises FileTooLargeError on overflow.
-    Returns the number of bytes written.
+    상한을 넘는 순간 멈추고, 쓰다 만 파일을 지운 뒤 FileTooLargeError를 낸다.
     """
     from webchart.core.errors import FileTooLargeError
 
@@ -119,7 +119,7 @@ def copy_capped(src, dst_path: Path, suffix: str, uri: str, chunk: int = 1 << 20
 
 
 def require_lib(module_name: str, extra: str) -> ModuleType:
-    """Import an optional connector dependency or raise a clear ConnectorError."""
+    """선택 의존성을 import한다. 없으면 설치할 extra를 알려 주는 ConnectorError를 낸다."""
     try:
         return importlib.import_module(module_name)
     except ImportError as e:

@@ -1,7 +1,7 @@
-"""FTP ingest backend (aioftp).
+"""FTP 인제스트 백엔드 (aioftp).
 
-URI:    ftp://host[:port]/path/file.csv
-creds:  username, password  (defaults to anonymous)
+URI:     ftp://host[:port]/path/file.csv
+creds:   username, password (없으면 anonymous)
 """
 
 import logging
@@ -23,7 +23,7 @@ logger = logging.getLogger("webchart.ingest.ftp")
 
 
 class FtpIngestBackend:
-    """Download a file over FTP and convert it to Parquet."""
+    """FTP로 파일을 내려받아 Parquet으로 변환한다."""
 
     @property
     def supported_protocols(self) -> list[str]:
@@ -53,7 +53,7 @@ class FtpIngestBackend:
             temp_path.unlink(missing_ok=True)
             raise ConnectorError(f"FTP download failed for {spec.uri}: {e}") from e
 
-        # Post-hoc size cap (aioftp has no simple mid-stream limit hook).
+        # aioftp에는 전송 도중 끊을 간단한 훅이 없어, 다 받은 뒤 크기 상한을 검사한다.
         try:
             enforce_size(temp_path.stat().st_size, suffix, spec.uri)
         except Exception:

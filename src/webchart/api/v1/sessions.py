@@ -1,4 +1,7 @@
-"""Interactive session management API endpoints."""
+"""인터랙티브 세션 관리 API.
+
+세션은 만든 호출자의 API 키 해시를 기록하고, 조회·종료는 같은 키로만 허용한다.
+"""
 
 from fastapi import APIRouter, Header, HTTPException, status
 
@@ -11,10 +14,10 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
 def _check_owner(state, x_api_key: str | None) -> None:
-    """Reject access if the session is owned by a different API key."""
+    """세션 소유 키와 다른 API 키로 접근하면 403을 낸다."""
     expected = state.owner_key_hash
     if expected is None:
-        return  # legacy session or auth disabled at creation time
+        return  # 소유자 기록이 없는 이전 세션이거나, 생성 시 키 없이 만든 세션
     if hash_api_key(x_api_key) != expected:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -27,7 +30,7 @@ async def create_session(
     req: SessionCreate,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    """Create a new interactive chart session."""
+    """인터랙티브 차트 세션을 만든다. 응답의 websocket_url로 연결한다."""
     try:
         state = await manager.create_session(
             dataset_id=req.dataset_id,
@@ -52,7 +55,7 @@ async def get_session(
     session_id: str,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    """Get session state."""
+    """세션 상태를 조회한다."""
     try:
         state = await manager.get_session(session_id)
     except WebchartError as e:
@@ -74,7 +77,7 @@ async def close_session(
     session_id: str,
     x_api_key: str | None = Header(default=None, alias="X-API-Key"),
 ):
-    """Close an interactive session."""
+    """세션을 닫는다."""
     try:
         state = await manager.get_session(session_id)
     except WebchartError as e:

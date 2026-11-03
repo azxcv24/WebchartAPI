@@ -1,12 +1,12 @@
-"""Top-level router aggregation."""
+"""`/api/v1` 아래 라우터를 하나로 묶는다."""
 
 from fastapi import APIRouter, Depends
 
 from webchart.api.auth import require_api_key
 from webchart.api.v1 import charts, datasets, sessions, ws
 
-# HTTP routes share the api-key dependency. The WebSocket route uses its
-# own check (require_api_key_ws) since header auth is awkward in browsers.
+# HTTP 라우트는 API 키 의존성을 공유한다. 브라우저 WebSocket은 헤더를 붙이기 어려워서
+# WebSocket 라우트는 자체 검사(require_api_key_ws)를 쓴다.
 api_router = APIRouter(prefix="/api/v1")
 http_router = APIRouter(dependencies=[Depends(require_api_key)])
 

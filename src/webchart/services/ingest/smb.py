@@ -1,8 +1,8 @@
-"""SMB / CIFS ingest backend (smbprotocol's smbclient).
+"""SMB / CIFS 인제스트 백엔드 (smbprotocol의 smbclient).
 
-URI:    smb://host/share/path/file.csv
-creds:  username, password, [domain]
-options: port (default 445)
+URI:     smb://host/share/path/file.csv
+creds:   username, password, [domain]
+options: port (기본 445)
 """
 
 import logging
@@ -24,7 +24,7 @@ logger = logging.getLogger("webchart.ingest.smb")
 
 
 class SmbIngestBackend:
-    """Download a file from an SMB share and convert it to Parquet."""
+    """SMB 공유에서 파일을 내려받아 Parquet으로 변환한다."""
 
     @property
     def supported_protocols(self) -> list[str]:
@@ -32,7 +32,7 @@ class SmbIngestBackend:
 
     @staticmethod
     def _unc_path(uri: str) -> str:
-        # smb://host/share/dir/file.csv  ->  \\host\share\dir\file.csv
+        # smb://host/share/dir/file.csv  ->  UNC 경로 \\host\share\dir\file.csv
         parsed = urlparse(uri)
         host = parsed.hostname
         path = unquote(parsed.path)
@@ -55,7 +55,7 @@ class SmbIngestBackend:
         if creds.get("password"):
             open_kwargs["password"] = creds["password"]
         if creds.get("domain"):
-            # smbprotocol expects DOMAIN\\user; prepend if not already qualified
+            # smbprotocol은 DOMAIN\user 형식을 받는다. 이미 도메인이 붙은 이름은 그대로 둔다
             user = open_kwargs.get("username", "")
             if user and "\\" not in user:
                 open_kwargs["username"] = f"{creds['domain']}\\{user}"

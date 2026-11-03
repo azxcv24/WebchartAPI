@@ -1,9 +1,9 @@
-"""SFTP ingest backend (asyncssh).
+"""SFTP 인제스트 백엔드 (asyncssh).
 
-URI:    sftp://host[:port]/path/file.csv
-creds:  username, password  and/or  private_key (PEM text), passphrase
-options: known_hosts — host-key verification is ON by default; set a path
-         to a known_hosts file, or "insecure" to explicitly disable it
+URI:     sftp://host[:port]/path/file.csv
+creds:   username, password 그리고/또는 private_key(PEM 텍스트), passphrase
+options: known_hosts — 호스트 키 검증은 기본으로 켜져 있다. known_hosts 파일 경로를
+         주거나, "insecure"로 명시적으로 끌 수 있다
 """
 
 import logging
@@ -25,7 +25,7 @@ logger = logging.getLogger("webchart.ingest.sftp")
 
 
 class SftpIngestBackend:
-    """Download a file over SFTP and convert it to Parquet."""
+    """SFTP로 파일을 내려받아 Parquet으로 변환한다."""
 
     @property
     def supported_protocols(self) -> list[str]:
@@ -60,11 +60,11 @@ class SftpIngestBackend:
                 raise ConnectorError(f"Invalid SFTP private key: {e}") from e
             connect_kwargs["client_keys"] = [key]
 
-        # Host-key verification is ON by default (uses the system known_hosts).
+        # 호스트 키 검증은 기본으로 켠다 (MITM 방지, 시스템 known_hosts 사용).
         # options.known_hosts:
-        #   - a path string -> verify against that known_hosts file
-        #   - "insecure"    -> explicit opt-out (disables verification)
-        #   - unset/other   -> default asyncssh verification
+        #   - 경로 문자열 -> 그 known_hosts 파일로 검증
+        #   - "insecure"  -> 명시적 해제 (검증하지 않음)
+        #   - 없음        -> asyncssh 기본 검증
         kh = spec.options.get("known_hosts")
         if kh == "insecure":
             connect_kwargs["known_hosts"] = None
@@ -79,7 +79,7 @@ class SftpIngestBackend:
             temp_path.unlink(missing_ok=True)
             raise ConnectorError(f"SFTP download failed for {spec.uri}: {e}") from e
 
-        # Post-hoc size cap.
+        # sftp.get은 전송 도중 끊을 수 없어, 다 받은 뒤 크기 상한을 검사한다.
         try:
             enforce_size(temp_path.stat().st_size, suffix, spec.uri)
         except Exception:

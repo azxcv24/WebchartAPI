@@ -1,11 +1,11 @@
-"""S3 / MinIO ingest backend.
+"""S3 / MinIO 인제스트 백엔드.
 
-MinIO is S3-compatible, so a single boto3-based backend serves both. For
-MinIO, pass options.endpoint_url (e.g. http://minio:9000); path-style
-addressing is selected automatically when a custom endpoint is present.
+MinIO는 S3 호환이라 boto3 기반 백엔드 하나로 둘 다 처리한다. MinIO는
+options.endpoint_url(예: http://minio:9000)을 주면 되고, 사용자 지정 엔드포인트가 있으면
+path-style 주소 방식이 자동으로 선택된다.
 
-URI:    s3://bucket/key/path.parquet   (or minio://bucket/key)
-creds:  access_key, secret_key, [session_token]
+URI:     s3://bucket/key/path.parquet   (또는 minio://bucket/key)
+creds:   access_key, secret_key, [session_token]
 options: endpoint_url, region, addressing_style ('path'|'virtual'|'auto')
 """
 
@@ -28,7 +28,7 @@ logger = logging.getLogger("webchart.ingest.s3")
 
 
 class S3IngestBackend:
-    """Download an object from S3/MinIO and convert it to Parquet."""
+    """S3/MinIO에서 객체를 내려받아 Parquet으로 변환한다."""
 
     @property
     def supported_protocols(self) -> list[str]:
@@ -36,6 +36,7 @@ class S3IngestBackend:
 
     @staticmethod
     def _parse(uri: str) -> tuple[str, str]:
+        """s3://bucket/key 를 (bucket, key)로 나눈다."""
         parsed = urlparse(uri)
         bucket = parsed.netloc
         key = unquote(parsed.path).lstrip("/")
@@ -45,6 +46,7 @@ class S3IngestBackend:
 
     @staticmethod
     def _client(spec: RemoteSourceSpec):
+        """spec의 자격 증명·옵션으로 boto3 S3 클라이언트를 만든다."""
         import boto3
         from botocore.config import Config
 
@@ -66,7 +68,7 @@ class S3IngestBackend:
         if endpoint:
             kwargs["endpoint_url"] = endpoint
 
-        # MinIO and most self-hosted gateways require path-style addressing.
+        # MinIO와 대부분의 자체 호스팅 게이트웨이는 path-style 주소 방식만 지원한다.
         addressing = opts.get("addressing_style") or ("path" if endpoint else "auto")
         kwargs["config"] = Config(
             signature_version="s3v4",
@@ -79,8 +81,8 @@ class S3IngestBackend:
         suffix = validate_remote_format(spec.uri)
         temp_path = temp_download_path(dataset_id, suffix)
 
-        # Guard the host we'll actually contact: a custom endpoint (MinIO)
-        # if set, otherwise the AWS S3 regional endpoint.
+        # 실제로 접속할 호스트만 검사한다. 사용자 지정 엔드포인트(MinIO)는 임의 주소일 수
+        # 있어 검사하고, 없으면 AWS S3 공개 엔드포인트라 검사하지 않는다.
         endpoint = spec.options.get("endpoint_url")
         if endpoint:
             guard_egress_host(urlparse(endpoint).hostname)
@@ -89,7 +91,7 @@ class S3IngestBackend:
             bucket, key = self._parse(spec.uri)
             client = self._client(spec)
             try:
-                # Reject oversized objects up front via ContentLength.
+                # 내려받기 전에 ContentLength로 너무 큰 객체를 거부한다.
                 head = client.head_object(Bucket=bucket, Key=key)
                 enforce_size(int(head.get("ContentLength", 0)), suffix, spec.uri)
                 client.download_file(bucket, key, str(temp_path))
@@ -101,5 +103,5 @@ class S3IngestBackend:
                 raise ConnectorError(f"S3 download failed for {spec.uri}: {e}") from e
 
         await run_in_thread(_download)
-        # convert_to_parquet runs in a thread and cleans up temp_path itself.
+        # convert_to_parquet은 끝나면 temp_path를 스스로 지운다.
         return await run_in_thread(convert_to_parquet, temp_path, dataset_id)

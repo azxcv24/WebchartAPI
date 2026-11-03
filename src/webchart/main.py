@@ -1,4 +1,4 @@
-"""FastAPI application factory."""
+"""FastAPI 애플리케이션 팩토리와 lifespan(시작·종료 처리)."""
 
 from contextlib import asynccontextmanager
 
@@ -26,17 +26,15 @@ from webchart.services.ingest.smb import SmbIngestBackend
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup and shutdown events."""
+    """시작 시 로깅·디렉터리·인제스트 백엔드·렌더 풀·Redis를 준비하고, 종료 시 정리한다."""
     setup_logging(settings.debug)
 
-    # Ensure data directories exist
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     (settings.data_dir / "uploads").mkdir(exist_ok=True)
     (settings.data_dir / "datasets").mkdir(exist_ok=True)
 
-    # Register ingest backends. File connectors lazy-import their drivers,
-    # so registering is cheap even without the [connectors] extra installed;
-    # an unavailable driver surfaces a clear error only when actually used.
+    # 커넥터는 드라이버를 지연 import하므로 [connectors] extra가 없어도 등록 비용이 작다.
+    # 드라이버가 없으면 실제로 쓸 때에야 명확한 에러를 낸다.
     for backend in (
         LocalIngestBackend(),
         S3IngestBackend(),
@@ -48,13 +46,12 @@ async def lifespan(app: FastAPI):
     ):
         register_backend(backend)
 
-    # Eager singleton init avoids first-request races
+    # 첫 요청끼리 초기화 경쟁을 하지 않도록 싱글턴을 미리 만든다.
     init_render_pool()
     await init_redis()
 
     yield
 
-    # Shutdown
     shutdown_render_pool()
     await close_redis()
 
@@ -67,7 +64,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Middleware
+    # add_middleware는 바깥쪽에 쌓이므로 RequestId가 가장 먼저 실행된다.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_allow_origins,
@@ -79,7 +76,6 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
-    # Routes
     app.include_router(api_router)
     app.include_router(viewer.router)
 

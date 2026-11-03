@@ -95,23 +95,23 @@ def _assign_bounds(col_info: ColumnInfo, low: Any, high: Any) -> None:
 
 
 def _find_column_index(meta: pq.FileMetaData, col_name: str) -> int | None:
-    """Find column index in Parquet physical schema by top-level field name.
+    """Parquet 물리 스키마에서 최상위 필드 이름으로 컬럼 인덱스를 찾는다.
 
-    Parquet's physical schema is the leaf-flattened view (nested struct
-    fields appear as `parent.child`). Match either the full path or the
-    top-level component so callers can pass Arrow field names directly.
+    물리 스키마는 리프만 펼친 형태라 중첩 struct 필드가 `parent.child`로 나온다. 전체
+    경로나 최상위 요소 중 하나가 맞으면 찾은 것으로 보아, 호출자가 Arrow 필드 이름을
+    그대로 넘길 수 있다. 중첩 필드는 첫 리프의 인덱스를 돌려준다.
     """
     schema = meta.schema
     for i in range(len(schema)):
         col = schema.column(i)
-        path = col.path  # e.g. "a.b" for nested
+        path = col.path  # 중첩 필드는 "a.b" 형태
         if path == col_name or path.split(".")[0] == col_name:
             return i
     return None
 
 
 def _arrow_type_to_str(arrow_type: object) -> str:
-    """Convert Arrow type to a human-readable string."""
+    """Arrow 타입을 사람이 읽기 쉬운 이름으로 바꾼다 (timestamp 계열은 모두 "datetime")."""
     import pyarrow as pa
 
     type_map = {

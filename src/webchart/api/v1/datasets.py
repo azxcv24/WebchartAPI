@@ -1,4 +1,8 @@
-"""Dataset API endpoints: upload, connect, list, schema, preview, delete."""
+"""데이터셋 API: 업로드, 원격 연결, 목록, 스키마, 미리보기, 피라미드, 행 추가, 삭제.
+
+업로드·원격 연결·피라미드 빌드는 202를 바로 돌려주고 백그라운드에서 처리한다.
+진행 상태는 데이터셋 메타데이터의 status로 확인한다.
+"""
 
 import logging
 import uuid
@@ -39,7 +43,7 @@ async def upload_dataset(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ):
-    """Upload a data file (CSV, Parquet, JSON, Excel)."""
+    """데이터 파일(CSV, Parquet, JSON, Excel)을 올린다. Parquet 변환은 백그라운드에서 한다."""
     try:
         temp_path = await save_upload(file)
     except WebchartError as e:
@@ -62,7 +66,7 @@ async def upload_dataset(
 
 
 async def _process_upload(temp_path: Path, dataset_id: str) -> None:
-    """Background task: convert uploaded file to Parquet."""
+    """백그라운드 작업: 업로드 파일을 Parquet로 변환한다. 실패하면 메타데이터에 에러를 기록한다."""
     try:
         await run_in_thread(convert_to_parquet, temp_path, dataset_id)
         logger.info(f"Dataset {dataset_id} processed successfully")
@@ -76,7 +80,7 @@ async def connect_remote(
     spec: RemoteSourceSpec,
     background_tasks: BackgroundTasks,
 ):
-    """Connect to a remote data source."""
+    """원격 데이터 소스(S3, HTTP, FTP, SFTP, SMB, ClickHouse 등)를 Parquet로 가져온다."""
     from webchart.services.ingest.registry import get_backend
 
     try:
@@ -112,14 +116,14 @@ async def list_datasets(
     limit: Annotated[int, Query(ge=1, le=500)] = 100,
     offset: Annotated[int, Query(ge=0)] = 0,
 ):
-    """List datasets (newest first), paginated."""
+    """데이터셋 목록 (최신순, 페이지 단위)."""
     datasets = access.list_datasets(limit=limit, offset=offset)
     return [DatasetDetailResponse(**d.model_dump()) for d in datasets]
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetailResponse)
 async def get_dataset(dataset_id: str):
-    """Get dataset metadata."""
+    """데이터셋 메타데이터를 조회한다."""
     try:
         meta = access.get_dataset_meta(dataset_id)
     except WebchartError as e:
@@ -130,7 +134,7 @@ async def get_dataset(dataset_id: str):
 
 @router.get("/{dataset_id}/schema")
 async def get_dataset_schema(dataset_id: str):
-    """Get dataset column schema with statistics."""
+    """컬럼 스키마와 컬럼별 통계를 조회한다."""
     try:
         meta = access.get_dataset_meta(dataset_id)
     except WebchartError as e:
@@ -144,7 +148,7 @@ async def preview_dataset(
     dataset_id: str,
     rows: Annotated[int, Query(ge=1, le=1000)] = 100,
 ):
-    """Preview first N rows of a dataset."""
+    """데이터셋 앞쪽 N행을 미리 본다."""
     try:
         meta = access.get_dataset_meta(dataset_id)
         sample = await run_in_thread(access.read_sample, dataset_id, rows)
@@ -177,7 +181,7 @@ async def build_pyramid_endpoint(
     from webchart.application.pyramids import build_pyramid
 
     try:
-        access.get_dataset_meta(dataset_id)  # 404 if missing
+        access.get_dataset_meta(dataset_id)  # 없으면 404
     except WebchartError as e:
         raise webchart_error_to_http(e)
 
@@ -238,7 +242,7 @@ async def append_rows(dataset_id: str, request: AppendRowsRequest) -> AppendRows
 
 @router.get("/{dataset_id}/pyramids", response_model=dict[str, PyramidInfo])
 async def list_pyramids(dataset_id: str):
-    """List pyramids already built for a dataset, keyed by x column."""
+    """이미 만든 피라미드 목록. 키는 x 컬럼 이름이다."""
     try:
         meta = access.get_dataset_meta(dataset_id)
     except WebchartError as e:
@@ -248,7 +252,7 @@ async def list_pyramids(dataset_id: str):
 
 @router.delete("/{dataset_id}", status_code=204)
 async def delete_dataset(dataset_id: str):
-    """Delete a dataset and any sessions referencing it."""
+    """데이터셋과 그것을 참조하는 세션을 지운다. 세션 정리 실패는 경고만 남긴다."""
     from webchart.cache.redis_cache import delete_sessions_for_dataset
 
     try:

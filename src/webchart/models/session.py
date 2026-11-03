@@ -36,7 +36,7 @@ class SessionState(BaseModel):
     dataset_id: str
     chart_config: ChartSpec
     viewport: ViewportWindow
-    owner_key_hash: str | None = None  # sha256 of the creating API key
+    owner_key_hash: str | None = None  # 세션을 만든 API 키의 sha256. 인증이 꺼져 있으면 None
     created_at: datetime = Field(default_factory=_utcnow)
     last_active: datetime = Field(default_factory=_utcnow)
 

@@ -23,7 +23,7 @@ def _dataset_dir(dataset_id: str) -> Path:
 
 
 def get_dataset_meta(dataset_id: str) -> DatasetMeta:
-    """Load dataset metadata from the sidecar JSON file."""
+    """meta.json을 읽는다. 없으면 DatasetNotFoundError."""
     meta_path = _dataset_dir(dataset_id) / "meta.json"
     if not meta_path.exists():
         raise DatasetNotFoundError(dataset_id)
@@ -39,7 +39,7 @@ def save_dataset_meta(meta: DatasetMeta) -> None:
 
 
 def read_full(dataset_id: str) -> dd.DataFrame:
-    """Read the full dataset as a lazy Dask DataFrame."""
+    """원본 전체를 지연 평가 Dask DataFrame으로 연다."""
     data_dir = _dataset_dir(dataset_id) / "data"
     if not data_dir.exists():
         raise DatasetNotFoundError(dataset_id)
@@ -47,20 +47,23 @@ def read_full(dataset_id: str) -> dd.DataFrame:
 
 
 def raw_store(meta: DatasetMeta) -> RawStore:
-    """데이터셋의 원본 저장소 (data_version별로 재사용된다)."""
+    """데이터셋의 원본 저장소. (data_version, 세대)마다 캐시해 재사용한다."""
     # 실시간 추가는 파일을 늘리므로 세대(generation)가 바뀌면 zone map을 새로 만든다
     version = f"{meta.data_version}:{meta.generation}"
     return raw_store_for(_dataset_dir(meta.dataset_id) / "data", meta.dataset_id, version)
 
 
 def read_sample(dataset_id: str, n: int = 100) -> pd.DataFrame:
-    """Read the first n rows for preview. Cheap: only touches the head partition."""
+    """미리보기용 앞쪽 n행. 첫 파티션만 읽으므로 싸다."""
     ddf = read_full(dataset_id)
     return ddf.head(n, compute=True)
 
 
 def list_datasets(limit: int = 100, offset: int = 0) -> list[DatasetMeta]:
-    """List available datasets with pagination (sorted by created_at desc)."""
+    """데이터셋 목록을 created_at 내림차순으로 페이지 단위로 돌려준다.
+
+    meta.json을 읽지 못하는 디렉터리는 경고만 남기고 건너뛴다.
+    """
     datasets_dir = settings.data_dir / "datasets"
     if not datasets_dir.exists():
         return []
@@ -82,7 +85,7 @@ def list_datasets(limit: int = 100, offset: int = 0) -> list[DatasetMeta]:
 
 
 def delete_dataset(dataset_id: str) -> None:
-    """Delete a dataset and its files."""
+    """데이터셋 디렉터리를 지운다. 캐시된 원본 저장소 인스턴스도 버린다."""
     import shutil
 
     ds_dir = _dataset_dir(dataset_id)

@@ -1,4 +1,4 @@
-"""Application middleware."""
+"""애플리케이션 미들웨어: 요청 ID, 응답 시간 기록, 호출자별 요청 수 제한."""
 
 import logging
 import threading
@@ -17,7 +17,7 @@ logger = logging.getLogger("webchart.middleware")
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """Add unique request ID to each request and propagate it to log records."""
+    """요청마다 짧은 ID를 붙여 로그 레코드와 `X-Request-Id` 응답 헤더로 전달한다."""
 
     async def dispatch(self, request: Request, call_next):
         request_id = str(uuid.uuid4())[:8]
@@ -32,7 +32,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 
 
 class TimingMiddleware(BaseHTTPMiddleware):
-    """Log request timing."""
+    """요청 처리 시간(ms)을 로그에 남기고 `X-Response-Time` 헤더로 돌려준다."""
 
     async def dispatch(self, request: Request, call_next):
         start = time.perf_counter()
@@ -47,15 +47,14 @@ class TimingMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """Per-caller fixed-window rate limit (in-memory).
+    """호출자별 요청 수 제한 (메모리 내, 최근 60초 슬라이딩 윈도).
 
-    Keyed by API key when present, otherwise by client IP. /health is
-    exempt so external probes do not consume budget. This is process-local;
-    deployments with multiple workers should pair with a sticky LB or
-    swap in a Redis-backed implementation.
+    API 키가 있으면 키별로, 없으면 클라이언트 IP별로 센다. 외부 헬스 체크가 한도를
+    쓰지 않도록 /health는 제외한다. 상태가 프로세스 안에만 있으므로 워커가 여럿이면
+    sticky LB와 함께 쓰거나 Redis 기반 구현으로 바꿔야 한다.
     """
 
-    _SWEEP_EVERY = 500  # sweep stale keys every N requests
+    _SWEEP_EVERY = 500  # 요청 N개마다 만료된 키를 정리한다
 
     def __init__(self, app) -> None:
         super().__init__(app)
@@ -67,7 +66,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     def _client_key(self, request: Request) -> str:
         api_key = request.headers.get(settings.api_key_header)
         if api_key:
-            # Hash so the raw key never lives as a dict key in memory.
+            # 원본 키가 dict 키로 메모리에 남지 않도록 해시한다.
             from webchart.api.auth import hash_api_key
 
             return f"key:{hash_api_key(api_key)}"
@@ -75,10 +74,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return f"ip:{client.host if client else 'unknown'}"
 
     def _sweep(self, cutoff: float) -> None:
-        """Drop keys whose window is fully expired (called under the lock)."""
-        stale = [
-            k for k, b in self._hits.items() if not b or b[-1] < cutoff
-        ]
+        """윈도가 모두 지난 키를 지운다. 락을 잡은 상태에서 호출한다."""
+        stale = [k for k, b in self._hits.items() if not b or b[-1] < cutoff]
         for k in stale:
             del self._hits[k]
 
@@ -101,6 +98,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             while bucket and bucket[0] < cutoff:
                 bucket.popleft()
             if len(bucket) >= limit:
+                # 가장 오래된 요청이 윈도를 벗어날 때까지 남은 초
                 retry_after = max(1, int(self._window_s - (now - bucket[0])))
                 return JSONResponse(
                     status_code=429,

@@ -155,7 +155,7 @@ class DatasetMeta(BaseModel):
     source_format: str = ""
     created_at: datetime = Field(default_factory=_utcnow)
     error_message: str | None = None
-    # Pyramids keyed by x_column name.
+    # x 컬럼 이름 → 그 컬럼의 피라미드
     pyramids: dict[str, PyramidInfo] = Field(default_factory=dict)
 
 

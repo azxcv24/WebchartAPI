@@ -1,4 +1,8 @@
-"""Local file upload handler - converts uploaded files to partitioned Parquet."""
+"""업로드 파일 처리와 Parquet 변환.
+
+HTTP 업로드와 모든 인제스트 커넥터가 결국 이 모듈의 convert_to_parquet /
+write_table_to_parquet으로 데이터셋을 만든다. 상태는 데이터셋 디렉터리의 meta.json에 둔다.
+"""
 
 import logging
 import uuid
@@ -24,10 +28,11 @@ from webchart.services.ingest.time_columns import (
 
 logger = logging.getLogger("webchart.ingest.upload")
 
-CHUNK_SIZE = 64 * 1024 * 1024  # 64MB read chunks
+CHUNK_SIZE = 64 * 1024 * 1024  # 업로드 읽기 단위, 64 MiB
 
 
 def _meta_path(dataset_id: str) -> Path:
+    """데이터셋 메타데이터 파일(data_dir/datasets/<dataset_id>/meta.json) 경로."""
     return settings.data_dir / "datasets" / dataset_id / "meta.json"
 
 
@@ -37,7 +42,7 @@ def write_initial_meta(
     source_format: str,
     size_bytes: int = 0,
 ) -> DatasetMeta:
-    """Persist an INGESTING placeholder so callers can poll status."""
+    """INGESTING 상태의 임시 meta.json을 써 둔다. 호출자는 이것으로 진행 상태를 조회한다."""
     meta = DatasetMeta(
         dataset_id=dataset_id,
         name=name,
@@ -52,7 +57,10 @@ def write_initial_meta(
 
 
 def write_error_meta(dataset_id: str, error_message: str) -> None:
-    """Update the sidecar to ERROR. Falls back to creating one if missing."""
+    """meta.json을 ERROR 상태로 바꾼다. 없거나 읽을 수 없으면 새로 만든다.
+
+    오류 메시지는 500자로 자른다.
+    """
     path = _meta_path(dataset_id)
     if path.exists():
         try:
@@ -68,13 +76,16 @@ def write_error_meta(dataset_id: str, error_message: str) -> None:
 
 
 async def save_upload(upload_file: UploadFile) -> Path:
-    """Save uploaded file to a temporary location."""
+    """업로드 파일을 uploads/ 아래 임시 파일로 스트리밍 저장하고 그 경로를 돌려준다.
+
+    확장자를 먼저 검사하고, 크기 상한을 넘는 순간 쓰다 만 파일을 지우고 중단한다.
+    """
     suffix = Path(upload_file.filename or "data").suffix.lower()
     if suffix not in settings.allowed_upload_extensions:
         raise UnsupportedFormatError(suffix)
 
-    # xlsx parsing is not chunked (pd.read_excel loads the whole sheet),
-    # so cap it tighter than the generic max_upload_size.
+    # xlsx는 청크 단위로 파싱할 수 없어(pd.read_excel이 시트 전체를 메모리에 올린다)
+    # 일반 max_upload_size보다 작은 상한을 둔다.
     if suffix == ".xlsx":
         size_limit = min(settings.max_upload_size, settings.max_xlsx_upload_size)
     else:
@@ -163,11 +174,11 @@ def convert_to_parquet(
     except Exception as e:
         raise DatasetProcessingError(f"Failed to convert {source_path.name}: {e}") from e
     finally:
-        # Clean up temp upload
+        # 성공·실패와 관계없이 임시 원본을 지운다
         source_path.unlink(missing_ok=True)
 
 
-# Dask 파티션 하나의 목표 크기
+# Dask 파티션 하나의 목표 크기(바이트)
 _PARTITION_BYTES = 128 * 1024 * 1024
 
 
