@@ -251,8 +251,14 @@ async def list_pyramids(dataset_id: str):
 
 
 @router.delete("/{dataset_id}", status_code=204)
-async def delete_dataset(dataset_id: str):
-    """데이터셋과 그것을 참조하는 세션을 지운다. 세션 정리 실패는 경고만 남긴다."""
+async def delete_dataset(dataset_id: str, background_tasks: BackgroundTasks):
+    """데이터셋과 그것을 참조하는 세션·타일 캐시를 지운다.
+
+    Redis(L2) 타일은 수가 많을 수 있어 응답 뒤 백그라운드에서 지운다. 지우기 전에도 같은
+    ID의 데이터셋이 다시 생기지 않으므로(ID는 UUID) 남은 타일이 쓰일 일은 없다.
+    세션·타일 정리가 실패하면 경고만 남긴다 (남은 키는 TTL이 지나면 사라진다).
+    """
+    from webchart.application.tiles import tile_memory_cache
     from webchart.cache.redis_cache import delete_sessions_for_dataset
 
     try:
@@ -260,9 +266,8 @@ async def delete_dataset(dataset_id: str):
     except WebchartError as e:
         raise webchart_error_to_http(e)
 
-    from webchart.application.tiles import tile_memory_cache
-
     tile_memory_cache.discard_prefix(f"tile:{dataset_id}:")
+    background_tasks.add_task(_purge_redis_tiles, dataset_id)
 
     try:
         removed = await delete_sessions_for_dataset(dataset_id)
@@ -270,3 +275,14 @@ async def delete_dataset(dataset_id: str):
             logger.info(f"Removed {removed} session(s) referencing {dataset_id}")
     except Exception as e:
         logger.warning(f"Failed to purge sessions for {dataset_id}: {e}")
+
+
+async def _purge_redis_tiles(dataset_id: str) -> None:
+    """백그라운드 작업: 지운 데이터셋의 Redis 타일을 지운다."""
+    from webchart.cache.redis_cache import purge_tiles
+
+    try:
+        removed = await purge_tiles(dataset_id)
+        logger.info(f"Purged {removed} cached tile(s) of {dataset_id}")
+    except Exception as e:
+        logger.warning(f"Failed to purge cached tiles for {dataset_id}: {e}")

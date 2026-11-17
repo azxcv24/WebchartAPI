@@ -41,8 +41,9 @@ async def get_session(session_id: str) -> SessionState:
     if data is None:
         raise SessionNotFoundError(session_id)
 
-    await redis_cache.refresh_session_ttl(session_id)
-    return SessionState.model_validate(data)
+    state = SessionState.model_validate(data)
+    await redis_cache.refresh_session_ttl(session_id, dataset_id=state.dataset_id)
+    return state
 
 
 async def update_viewport(session_id: str, viewport: ViewportWindow) -> SessionState:
@@ -56,6 +57,7 @@ async def update_viewport(session_id: str, viewport: ViewportWindow) -> SessionS
 
 
 async def close_session(session_id: str) -> None:
-    """세션 상태를 지운다."""
-    await redis_cache.delete_session(session_id)
+    """세션 상태를 지운다 (데이터셋별 세션 색인에서도 뺀다)."""
+    data = await redis_cache.get_session(session_id)
+    await redis_cache.delete_session(session_id, (data or {}).get("dataset_id"))
     logger.info(f"Closed session {session_id}")
