@@ -4,17 +4,19 @@
 1. 피라미드 레벨 격자가 요청 격자와 경계가 맞으면 → 피라미드 (정확)
    타일은 항상 여기에 해당한다 (L = z + log2(타일 px · dpr) ≤ 최대 레벨일 때).
 2. 원본 읽기량이 예산 안이면 → 원본 즉석 집계 (정확)
-3. 피라미드가 있으면 → 픽셀 폭의 1/8 이하 버킷 레벨을 픽셀 열로 다시 묶기 (근사, exact=false)
+3. 피라미드가 있으면 → 피라미드를 픽셀 열로 정확히 다시 묶기 (application/view_regroup.py).
+   열 경계에 걸친 최상세 버킷만 원본으로 나눈다. 그 원본이 예산을 넘으면 걸친 버킷 하나
+   폭 이내의 근사로 남기고 exact=false로 표시한다
 4. 그 외 → 원본 즉석 집계 (정확하지만 읽는 행 수에 비례해 느리다)
 
 결과에는 정확 여부(exact)와 출처(source)가 붙어 응답 헤더까지 전달된다 (P3).
 """
 
 import logging
-import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from webchart.application.view_regroup import regroup_view
 from webchart.config import settings
 from webchart.domain.bucket_stats import BucketStats
 from webchart.domain.geometry import BucketGrid, PixelLattice, TileAddress, XRange
@@ -24,9 +26,6 @@ from webchart.models.dataset import PYRAMID_FORMAT_VERSION, DatasetMeta, Pyramid
 from webchart.services.data.access import raw_store
 
 logger = logging.getLogger("webchart.application.windows")
-
-# 피라미드 근사에서 픽셀 열 하나당 최소 버킷 수. 경계 오차를 열 폭의 1/8 이하로 줄인다.
-_APPROX_BUCKETS_PER_COLUMN = 8
 
 SOURCE_RAW = "raw"
 
@@ -161,9 +160,8 @@ def fetch_view_windows(
     if reader is None or store.estimate_rows(x_column, grid.x_range) <= budget:
         return _raw_windows(meta, x_column, y_columns, grid)
 
-    level = reader.level(_approximation_level(reader, grid))
-    windows = {s: reader.regrouped_window(level, s, grid) for s in y_columns}
-    return WindowSet(windows, is_exact=False, source=f"pyramid:L{level.level}")
+    regrouped = regroup_view(reader, store, x_column, y_columns, grid, budget)
+    return WindowSet(regrouped.windows, regrouped.is_exact, regrouped.source)
 
 
 def _raw_windows(
@@ -179,10 +177,3 @@ def _aligned_level(reader: PyramidReader, grid: BucketGrid) -> int | None:
         if grid.alignment_ratio(reader.lattice.level_grid(level)) is not None:
             return level
     return None
-
-
-def _approximation_level(reader: PyramidReader, grid: BucketGrid) -> int:
-    """버킷 폭이 픽셀 열 폭의 1/8 이하가 되는 가장 거친 레벨 (없으면 최상세)."""
-    target_width = grid.bucket_width / _APPROX_BUCKETS_PER_COLUMN
-    wanted = math.ceil(math.log2(reader.lattice.domain.width / target_width))
-    return max(0, min(reader.info.max_level, wanted))

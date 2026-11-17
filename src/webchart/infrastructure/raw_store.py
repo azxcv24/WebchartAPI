@@ -217,6 +217,13 @@ class RawStore:
         """
         zone_map = self.zone_map(x_column)
         groups = zone_map.overlapping(x_range) if x_range else np.arange(len(zone_map))
+        yield from self.read_groups(x_column, y_columns, groups)
+
+    def read_groups(
+        self, x_column: str, y_columns: list[str], groups: IntArray
+    ) -> Iterator[tuple[FloatArray, dict[str, FloatArray]]]:
+        """로우그룹(저장 순서 번호)을 하나씩 읽어 (x, {컬럼: 값})을 낸다 (scan과 같은 형식)."""
+        zone_map = self.zone_map(x_column)
         columns = list(dict.fromkeys([x_column, *y_columns]))
         for group in groups:
             table = self._read_groups(zone_map, np.array([group]), columns)

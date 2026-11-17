@@ -144,12 +144,17 @@ class BucketStats:
 
         first/last를 x 비교로 고르므로, 순서가 섞인 데이터를 합쳐도 결과가 같다.
         x가 같은 점끼리는 first는 self를, last는 later를 고른다 (입력 순서 유지).
-        min/max의 값이 같으면 self(먼저 나온 점)를 유지한다.
+        min/max의 값이 같으면 x가 작은 점(같으면 self)을 고른다. 원본을 x 순서로 훑을 때
+        먼저 나온 점과 같으므로, 합치는 순서가 섞여도(정적 렌더 재묶기) 결과가 같다.
         """
         take_first = later.first_x < self.first_x
         take_last = later.last_x >= self.last_x
-        take_min = later.min_y < self.min_y
-        take_max = later.max_y > self.max_y
+        take_min = (later.min_y < self.min_y) | (
+            (later.min_y == self.min_y) & (later.min_x < self.min_x)
+        )
+        take_max = (later.max_y > self.max_y) | (
+            (later.max_y == self.max_y) & (later.max_x < self.max_x)
+        )
         return BucketStats(
             count=self.count + later.count,
             sum_y=self.sum_y + later.sum_y,

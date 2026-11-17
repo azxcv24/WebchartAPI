@@ -132,3 +132,15 @@ def test_empty_input():
     ids, stats = aggregate_sorted(np.empty(0), np.empty(0), np.empty(0, dtype=np.int64))
     assert len(ids) == 0 and len(stats) == 0
     assert BucketStats.empty(3).y_bounds() is None
+
+
+def test_merge_ties_pick_smallest_x_whatever_the_order():
+    """min/max 값이 같으면 x가 작은 점이 남는다. 합치는 순서가 섞여도 같다."""
+    early = BucketStats.from_points(np.array([1.0, 2.0]), np.array([5.0, -5.0])).regroup(
+        np.array([0])
+    )
+    late = BucketStats.from_points(np.array([8.0, 9.0]), np.array([5.0, -5.0])).regroup(
+        np.array([0])
+    )
+    for merged in (early.merge(late), late.merge(early)):
+        assert (merged.max_x[0], merged.min_x[0]) == (1.0, 2.0)

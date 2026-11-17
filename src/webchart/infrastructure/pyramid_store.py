@@ -230,8 +230,8 @@ class PyramidLevel:
     def row_count(self) -> IntArray:
         return self.column(_ROW_COUNT)
 
-    def stats(self, series: str, buckets: slice) -> BucketStats:
-        """버킷 구간의 집계. mmap 배열의 뷰라 복사하지 않는다."""
+    def stats(self, series: str, buckets: slice | IntArray) -> BucketStats:
+        """버킷 구간(또는 번호 배열)의 집계. slice면 mmap 배열의 뷰라 복사하지 않는다."""
         return BucketStats(
             **{field: self.column(stat_column(series, field))[buckets] for field in _STAT_FIELDS}
         )
@@ -374,8 +374,13 @@ def _single(level: PyramidLevel, series: str, bucket: int | None) -> BucketStats
 
 def _neighbor_buckets(level: PyramidLevel, first: int, stop: int) -> tuple[int | None, int | None]:
     """[first, stop) 바깥에서 행이 있는 가장 가까운 버킷 (왼쪽, 오른쪽)."""
-    rows = level.row_count
-    return _search(rows, first, step=-1), _search(rows, stop, step=1)
+    return nearest_filled_bucket(level, first, step=-1), nearest_filled_bucket(level, stop, step=1)
+
+
+def nearest_filled_bucket(level: PyramidLevel, boundary: int, step: int) -> int | None:
+    """boundary 바깥 방향(step=-1이면 왼쪽 [.., boundary), 1이면 오른쪽 [boundary, ..))으로
+    행이 있는 가장 가까운 버킷."""
+    return _search(level.row_count, boundary, step)
 
 
 def _search(rows: IntArray, boundary: int, step: int) -> int | None:
