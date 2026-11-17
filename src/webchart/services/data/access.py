@@ -5,6 +5,9 @@
 """
 
 import logging
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import dask.dataframe as dd
@@ -15,11 +18,44 @@ from webchart.core.errors import DatasetNotFoundError
 from webchart.infrastructure.raw_store import RawStore, forget_dataset, raw_store_for
 from webchart.models.dataset import DatasetMeta
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows: 워커 하나로 돌린다 (스레드 락만 쓴다)
+    fcntl = None  # type: ignore[assignment]
+
 logger = logging.getLogger("webchart.data.access")
 
 
 def _dataset_dir(dataset_id: str) -> Path:
     return settings.data_dir / "datasets" / dataset_id
+
+
+_update_locks: dict[str, threading.Lock] = {}
+_update_locks_guard = threading.Lock()
+
+
+@contextmanager
+def exclusive_update(dataset_id: str) -> Iterator[None]:
+    """데이터셋의 원본·피라미드를 바꾸는 작업(행 추가, 피라미드 빌드)을 한 번에 하나로 묶는다.
+
+    스레드 락으로 같은 프로세스 안을, 데이터셋 디렉터리의 파일 락(flock)으로 워커
+    프로세스끼리를 막는다. 피라미드 빌드 도중 행이 추가되면 그 행이 피라미드에서 빠지고,
+    두 워커가 같은 피라미드를 동시에 merge하면 버킷이 깨지기 때문이다.
+    """
+    with _update_locks_guard:
+        thread_lock = _update_locks.setdefault(dataset_id, threading.Lock())
+    with thread_lock:
+        ds_dir = _dataset_dir(dataset_id)
+        if not ds_dir.exists():
+            raise DatasetNotFoundError(dataset_id)
+        with open(ds_dir / ".update.lock", "a+b") as handle:
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(handle, fcntl.LOCK_UN)
 
 
 def get_dataset_meta(dataset_id: str) -> DatasetMeta:

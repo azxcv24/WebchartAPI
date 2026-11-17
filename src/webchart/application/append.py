@@ -17,7 +17,6 @@ y범위가 바뀌면(새 최댓값 등) 모든 타일 키가 바뀐다 (그림 �
 
 import logging
 import math
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -41,16 +40,18 @@ from webchart.infrastructure.pyramid_store import (
 )
 from webchart.infrastructure.raw_store import data_files
 from webchart.models.dataset import AppendRecord, ColumnKind, DatasetMeta
-from webchart.services.data.access import get_dataset_meta, raw_store, save_dataset_meta
+from webchart.services.data.access import (
+    exclusive_update,
+    get_dataset_meta,
+    raw_store,
+    save_dataset_meta,
+)
 from webchart.services.data.x_domain import canonical_from_arrow, canonical_scalar
 
 logger = logging.getLogger("webchart.application.append")
 
 # 추가 기록 상한. 넘으면 오래된 절반을 한 기록으로 합친다 (구간은 합집합 → 보수적으로 무효화)
 MAX_APPEND_LOG = 512
-
-_locks: dict[str, threading.Lock] = {}
-_locks_guard = threading.Lock()
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +65,7 @@ class AppendResult:
 
 def append_columns(dataset_id: str, columns: dict[str, list[Any]]) -> AppendResult:
     """열 형식 데이터 `{컬럼: [값...]}`를 데이터셋에 추가한다. 데이터셋마다 한 번에 하나씩."""
-    with _lock_for(dataset_id):
+    with exclusive_update(dataset_id):
         meta = get_dataset_meta(dataset_id)
         table = _conform(meta, columns)
         if table.num_rows == 0:
@@ -113,11 +114,6 @@ def tile_epoch(meta: DatasetMeta, x_column: str, x_range: XRange) -> int:
         if bounds is None or (bounds[0] < x_range.end and bounds[1] >= x_range.start):
             epoch = max(epoch, record.generation)
     return epoch
-
-
-def _lock_for(dataset_id: str) -> threading.Lock:
-    with _locks_guard:
-        return _locks.setdefault(dataset_id, threading.Lock())
 
 
 def _axis_columns(meta: DatasetMeta) -> list[str]:

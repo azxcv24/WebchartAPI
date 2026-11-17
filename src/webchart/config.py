@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -63,6 +64,10 @@ class Settings(BaseSettings):
     # 캐시 TTL (초): 타일 캐시, 마지막 접근 이후 세션 유지 시간
     tile_cache_ttl: int = 3600
     session_ttl: int = 900
+
+    # 실시간 추가 알림을 워커끼리 나누는 방법. "redis"면 Redis pub/sub으로 모든 워커의
+    # WS 세션에 알린다. "local"이면 추가가 일어난 워커의 세션에만 알린다 (워커 하나일 때).
+    live_events: Literal["redis", "local"] = "redis"
 
     # 업로드를 받는 파일 확장자
     allowed_upload_extensions: list[str] = [".csv", ".parquet", ".json", ".xlsx", ".tsv"]

@@ -15,7 +15,12 @@ from webchart.infrastructure.pyramid_store import (
 )
 from webchart.infrastructure.pyramid_store import build_pyramid as build_levels
 from webchart.models.dataset import PYRAMID_FORMAT_VERSION, ColumnKind, DatasetMeta, PyramidInfo
-from webchart.services.data.access import get_dataset_meta, raw_store, save_dataset_meta
+from webchart.services.data.access import (
+    exclusive_update,
+    get_dataset_meta,
+    raw_store,
+    save_dataset_meta,
+)
 
 logger = logging.getLogger("webchart.application.pyramids")
 
@@ -27,7 +32,14 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
         dataset_id: 데이터셋 ID
         x_column: 수치 또는 시간 컬럼
         columns: 집계할 y 컬럼. None이면 x를 뺀 모든 수치 컬럼
+
+    빌드하는 동안 행 추가를 막는다 (빌드가 읽는 원본과 피라미드가 어긋나지 않게).
     """
+    with exclusive_update(dataset_id):
+        return _build_locked(dataset_id, x_column, columns)
+
+
+def _build_locked(dataset_id: str, x_column: str, columns: list[str] | None) -> PyramidInfo:
     meta = get_dataset_meta(dataset_id)
     kinds = {column.name: column.kind for column in meta.columns}
     if kinds.get(x_column) not in (ColumnKind.NUMERIC, ColumnKind.TIME):
@@ -71,7 +83,7 @@ def build_pyramid(dataset_id: str, x_column: str, columns: list[str] | None = No
         size_bytes=size_bytes,
     )
 
-    # 빌드 도중 다른 갱신이 있었을 수 있으므로 meta를 다시 읽어 피라미드 항목만 바꾼다
+    # 락 밖에서 meta를 고치는 작업(상태 기록 등)을 덮어쓰지 않도록 다시 읽어 피라미드 항목만 바꾼다
     fresh = get_dataset_meta(dataset_id)
     fresh.pyramids[x_column] = info
     save_dataset_meta(fresh)

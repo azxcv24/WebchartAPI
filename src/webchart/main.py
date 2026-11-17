@@ -10,6 +10,7 @@ from fastapi.responses import PlainTextResponse
 from webchart.api import viewer
 from webchart.api.middleware import RateLimitMiddleware, RequestIdMiddleware, TimingMiddleware
 from webchart.api.router import api_router
+from webchart.application.live import RedisEventRelay, dataset_events
 from webchart.cache.redis_cache import close_redis, init_redis
 from webchart.config import settings
 from webchart.core.concurrency import init_render_pool, shutdown_render_pool
@@ -49,10 +50,19 @@ async def lifespan(app: FastAPI):
 
     # 첫 요청끼리 초기화 경쟁을 하지 않도록 싱글턴을 미리 만든다.
     init_render_pool()
-    await init_redis()
+    redis = await init_redis()
+    # 실시간 추가 알림을 모든 워커의 WS 세션에 나눈다 (워커 하나면 live_events="local")
+    relay = None
+    if settings.live_events == "redis":
+        relay = RedisEventRelay(redis, dataset_events)
+        await relay.start()
+        dataset_events.attach_relay(relay)
 
     yield
 
+    if relay is not None:
+        dataset_events.attach_relay(None)
+        await relay.stop()
     shutdown_render_pool()
     await close_redis()
 
