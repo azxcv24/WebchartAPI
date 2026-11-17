@@ -16,6 +16,7 @@ from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import ConnectorError, WebchartError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
+    CappedDownload,
     enforce_size,
     guard_egress_host,
     temp_download_path,
@@ -80,6 +81,7 @@ class S3IngestBackend:
 
         # 실제로 접속할 호스트만 검사한다. 사용자 지정 엔드포인트(MinIO)는 임의 주소일 수
         # 있어 검사하고, 없으면 AWS S3 공개 엔드포인트라 검사하지 않는다.
+        # boto3는 접속 주소를 고정할 수 없어 DNS 리바인딩까지는 막지 못한다 (README 참고).
         endpoint = spec.options.get("endpoint_url")
         if endpoint:
             guard_egress_host(urlparse(endpoint).hostname)
@@ -88,10 +90,12 @@ class S3IngestBackend:
             bucket, key = self._parse(spec.uri)
             client = self._client(spec)
             try:
-                # 내려받기 전에 ContentLength로 너무 큰 객체를 거부한다.
-                head = client.head_object(Bucket=bucket, Key=key)
-                enforce_size(int(head.get("ContentLength", 0)), suffix)
-                client.download_file(bucket, key, str(temp_path))
+                # 내려받기 전에 ContentLength로 너무 큰 객체를 거부하고, 받는 동안에도
+                # 실제로 받은 양으로 다시 끊는다 (그 사이 객체가 바뀌어도 상한을 지킨다).
+                obj = client.get_object(Bucket=bucket, Key=key)
+                enforce_size(int(obj.get("ContentLength", 0)), suffix)
+                with CappedDownload(temp_path, suffix) as out:
+                    out.copy_from(obj["Body"])
             except WebchartError:
                 temp_path.unlink(missing_ok=True)
                 raise

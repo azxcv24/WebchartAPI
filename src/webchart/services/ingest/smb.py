@@ -12,7 +12,7 @@ from webchart.core.concurrency import run_in_thread
 from webchart.core.errors import ConnectorError, WebchartError
 from webchart.models.dataset import DatasetMeta, RemoteSourceSpec
 from webchart.services.ingest.common import (
-    copy_capped,
+    CappedDownload,
     guard_egress_host,
     require_lib,
     temp_download_path,
@@ -44,6 +44,8 @@ class SmbIngestBackend:
         dataset_id = dest.name
         suffix = validate_remote_format(spec.uri)
         temp_path = temp_download_path(dataset_id, suffix)
+        # SMB는 Kerberos가 호스트 이름(SPN)을 써야 해서 검사한 IP로 바꿔 접속하지 않는다.
+        # 그래서 DNS 리바인딩까지는 막지 못한다 (README 보안 항목 참고).
         guard_egress_host(urlparse(spec.uri).hostname)
         unc = self._unc_path(spec.uri)
 
@@ -63,8 +65,11 @@ class SmbIngestBackend:
 
         def _download() -> None:
             try:
-                with smbclient.open_file(unc, mode="rb", **open_kwargs) as src:
-                    copy_capped(src, temp_path, suffix)
+                with (
+                    smbclient.open_file(unc, mode="rb", **open_kwargs) as src,
+                    CappedDownload(temp_path, suffix) as out,
+                ):
+                    out.copy_from(src)
             except WebchartError:
                 temp_path.unlink(missing_ok=True)
                 raise

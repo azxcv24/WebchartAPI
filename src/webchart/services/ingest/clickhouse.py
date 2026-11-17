@@ -58,7 +58,7 @@ class ClickHouseIngestBackend:
         sql, name = self._resolve_query(spec)
 
         parsed = urlparse(spec.uri)
-        guard_egress_host(parsed.hostname)
+        address = guard_egress_host(parsed.hostname)
         secure = spec.protocol == "clickhouses" or spec.options.get("secure") == "true"
         port = parsed.port or (8443 if secure else 8123)
         database = unquote(parsed.path).lstrip("/") or spec.options.get("database", "default")
@@ -71,12 +71,16 @@ class ClickHouseIngestBackend:
 
         def _fetch():
             client = cc.get_client(
-                host=parsed.hostname,
+                # 검사한 주소로 접속한다. TLS의 SNI·인증서 검사는 원래 호스트 이름으로 한다
+                host=address,
+                server_host_name=parsed.hostname if secure else None,
                 port=port,
                 username=creds.get("username", "default"),
                 password=creds.get("password", ""),
                 database=database,
                 secure=secure,
+                connect_timeout=settings.connector_timeout,
+                send_receive_timeout=settings.connector_timeout,
             )
             try:
                 # 서버 쪽에서 결과 행 수를 제한하고, 넘으면 잘라 내지 않고 오류로 끝낸다

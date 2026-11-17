@@ -16,6 +16,8 @@ def test_connect_unsupported_protocol(client):
 def test_connect_s3_lifecycle(client, monkeypatch, tmp_data_dir):
     """connect returns INGESTING immediately; a stubbed S3 backend drives
     the dataset to READY."""
+    import io
+
     import pandas as pd
 
     from webchart.services.ingest import s3 as s3_module
@@ -23,11 +25,9 @@ def test_connect_s3_lifecycle(client, monkeypatch, tmp_data_dir):
     sample = pd.DataFrame({"x": range(30), "y": [i * 2.0 for i in range(30)]})
 
     class FakeClient:
-        def head_object(self, Bucket, Key):  # noqa: N803 (boto3 kwarg names)
-            return {"ContentLength": 1024}
-
-        def download_file(self, bucket, key, filename):
-            sample.to_csv(filename, index=False)
+        def get_object(self, Bucket, Key):  # noqa: N803 (boto3 kwarg names)
+            body = sample.to_csv(index=False).encode()
+            return {"ContentLength": len(body), "Body": io.BytesIO(body)}
 
     monkeypatch.setattr(
         s3_module.S3IngestBackend, "_client", staticmethod(lambda spec: FakeClient())

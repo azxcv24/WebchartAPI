@@ -72,7 +72,6 @@ def test_clickhouse_table_identifier_validated():
     ],
 )
 async def test_missing_driver_raises_connector_error(backend_cls, scheme, lib, tmp_data_dir):
-    pytest.importorskip  # noqa: keep import semantics explicit
     try:
         __import__(lib)
         pytest.skip(f"{lib} is installed; missing-driver path not exercised")

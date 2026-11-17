@@ -9,11 +9,14 @@ import importlib
 import ipaddress
 import socket
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, TracebackType
+from typing import BinaryIO, Protocol
 from urllib.parse import unquote, urlparse
 
 from webchart.config import settings
-from webchart.core.errors import ConnectorError, UnsupportedFormatError
+from webchart.core.errors import ConnectorError, FileTooLargeError, UnsupportedFormatError
+
+DOWNLOAD_CHUNK_BYTES = 1 << 20  # 1 MiB
 
 
 def _is_blocked_ip(ip: str) -> bool:
@@ -32,28 +35,34 @@ def _is_blocked_ip(ip: str) -> bool:
     )
 
 
-def guard_egress_host(host: str | None) -> None:
-    """내부망 주소로 해석되는 호스트를 거부한다.
+def guard_egress_host(host: str | None) -> str:
+    """호스트를 한 번 해석해 검사하고, 접속할 IP 주소를 돌려준다.
 
     SSRF(클라우드 메타데이터 169.254.169.254, 내부 서비스 등) 완화용이다. 해석된 주소가
-    하나라도 막힌 대역이면 거부한다. settings.block_private_egress가 False면 아무것도
-    하지 않는다.
+    하나라도 막힌 대역이면 거부한다.
+
+    커넥터는 돌려받은 주소로 접속해야 한다. 검사와 접속이 DNS를 따로 풀면, 그 사이에
+    답을 내부 주소로 바꾸는 DNS 리바인딩으로 검사를 건너뛸 수 있기 때문이다.
+    settings.block_private_egress가 False면 검사하지 않고 host를 그대로 돌려준다.
     """
     if not settings.block_private_egress:
-        return
+        return host or ""
     if not host:
         raise ConnectorError("Missing host in URI")
     try:
-        infos = socket.getaddrinfo(host, None)
+        infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     except socket.gaierror as e:
         raise ConnectorError(f"Cannot resolve host {host!r}: {e}") from e
-    for info in infos:
-        ip = info[4][0]
+    addresses = [str(info[4][0]) for info in infos]
+    for ip in addresses:
         if _is_blocked_ip(ip):
             raise ConnectorError(
                 f"Refusing to fetch from private/loopback address for host {host!r} "
                 f"({ip}); set WEBCHART_BLOCK_PRIVATE_EGRESS=false to allow"
             )
+    if not addresses:
+        raise ConnectorError(f"Cannot resolve host {host!r}")
+    return addresses[0]
 
 
 def remote_suffix(uri: str) -> str:
@@ -85,34 +94,62 @@ def size_limit_for(suffix: str) -> int:
 
 
 def enforce_size(num_bytes: int, suffix: str) -> None:
-    """num_bytes가 상한을 넘으면 FileTooLargeError를 낸다."""
-    from webchart.core.errors import FileTooLargeError
-
+    """num_bytes가 상한을 넘으면 FileTooLargeError를 낸다 (원격이 알려 준 크기로 미리 거를 때)."""
     limit = size_limit_for(suffix)
     if num_bytes > limit:
         raise FileTooLargeError(num_bytes, limit)
 
 
-def copy_capped(src, dst_path: Path, suffix: str, chunk: int = 1 << 20) -> int:
-    """파일 객체 src를 dst_path로 chunk 바이트씩 복사하고 쓴 바이트 수를 돌려준다.
+class _Readable(Protocol):
+    def read(self, size: int, /) -> bytes: ...
 
-    상한을 넘는 순간 멈추고, 쓰다 만 파일을 지운 뒤 FileTooLargeError를 낸다.
+
+class CappedDownload:
+    """원격 파일을 크기 상한을 지키며 로컬 파일에 쓴다.
+
+    with 블록 안에서 받은 조각을 write()로 넘긴다. 쓴 양이 상한을 넘는 순간
+    FileTooLargeError를 내므로, 원격이 크기를 속이거나 알려 주지 않아도 디스크를
+    상한 이상 쓰지 않는다. 블록이 예외로 끝나면 쓰다 만 파일을 지운다.
+
+        with CappedDownload(temp_path, suffix) as out:
+            async for block in stream:
+                out.write(block)
     """
-    from webchart.core.errors import FileTooLargeError
 
-    limit = size_limit_for(suffix)
-    written = 0
-    with open(dst_path, "wb") as out:
-        while True:
-            block = src.read(chunk)
-            if not block:
-                break
-            written += len(block)
-            if written > limit:
-                dst_path.unlink(missing_ok=True)
-                raise FileTooLargeError(written, limit)
-            out.write(block)
-    return written
+    def __init__(self, dst_path: Path, suffix: str) -> None:
+        self.path = dst_path
+        self.limit_bytes = size_limit_for(suffix)
+        self.written_bytes = 0
+        self._out: BinaryIO | None = None
+
+    def __enter__(self) -> "CappedDownload":
+        self._out = open(self.path, "wb")
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        if self._out is not None:
+            self._out.close()
+        if exc_type is not None:
+            self.path.unlink(missing_ok=True)
+
+    def write(self, block: bytes) -> None:
+        """조각을 쓴다. 상한을 넘기면 쓰지 않고 FileTooLargeError를 낸다."""
+        if self._out is None:
+            raise RuntimeError("CappedDownload.write() outside of a with block")
+        self.written_bytes += len(block)
+        if self.written_bytes > self.limit_bytes:
+            raise FileTooLargeError(self.written_bytes, self.limit_bytes)
+        self._out.write(block)
+
+    def copy_from(self, src: _Readable, chunk_bytes: int = DOWNLOAD_CHUNK_BYTES) -> None:
+        """동기 파일 객체 src를 끝까지 읽어 쓴다 (SMB, S3 본문)."""
+        while block := src.read(chunk_bytes):
+            self.write(block)
 
 
 def require_lib(module_name: str, extra: str) -> ModuleType:
