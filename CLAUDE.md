@@ -29,7 +29,8 @@ src/webchart/
 │   ├── y_range.py          #   YRange, 정책, matplotlib과 같은 자동 스케일
 │   └── ticks.py            #   수치·시간 눈금
 ├── infrastructure/         # raw_store(정렬 Parquet + zone map), pyramid_store(.npy mmap)
-├── application/            # 유스케이스: windows(경로 선택), tiles, static_chart, layers(레지스트리),
+├── application/            # 유스케이스: windows(경로 선택), view_regroup(정적 재묶기), tiles,
+│                           #   static_chart, layers(레지스트리),
 │                           #   y_ranges, density, interaction, pyramids, append, live, axes, chart_registry
 ├── services/
 │   ├── ingest/             # 커넥터, sorted_layout(x 정렬 저장), time_columns
@@ -51,7 +52,7 @@ x 전체를 2^L 등분한 격자(PixelLattice)를 피라미드·타일·정적 �
 LTTB 등은 `downsample_algorithm`으로 고를 때만 쓰는 근사다(exact=false).
 
 ### 렌더 파이프라인
-plan(application/windows.py: 피라미드 | 원본 | 근사) → fetch → project(application/layers.py
+plan(application/windows.py: 피라미드 | 원본 | 피라미드 재묶기) → fetch → project(application/layers.py
 레지스트리) → paint(services/render/painters.py 레지스트리, 그리기 프로세스 풀) → L1/L2 캐시.
 타일과 정적 렌더가 같은 경로다. 응답에 exact/source를 붙인다.
 
@@ -65,7 +66,8 @@ crosshair · range_stats · data_appended.
 
 ### 실시간 추가
 `POST /datasets/{id}/rows` → 새 Parquet 파일 + 피라미드 버킷 in-place merge + 격자 2배 확장 +
-영향받은 타일만 캐시 키 변경(tile epoch) + WS 알림.
+영향받은 타일만 캐시 키 변경(tile epoch) + WS 알림(Redis pub/sub, 워커 여러 개).
+행 추가와 피라미드 빌드는 데이터셋별 잠금(`exclusive_update`, 파일 락)을 같이 쓴다.
 
 ## Common Commands
 

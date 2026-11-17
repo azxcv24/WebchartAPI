@@ -77,7 +77,8 @@ cache    L1 프로세스 메모리 → L2 Redis (데코레이터)   application/
 
 1. 피라미드 레벨 경계가 요청 격자와 맞으면 → 피라미드 (정확). 타일은 항상 여기에 해당한다.
 2. 원본 읽기량이 예산(`EXACT_RAW_ROW_BUDGET`) 안이거나 피라미드가 없으면 → 원본을 로우그룹씩 읽어 즉석 집계 (정확, 메모리 = 격자 + 로우그룹 1개)
-3. 그 외 → 피라미드를 픽셀로 다시 묶음 (근사, `exact=false`)
+3. 그 외 → 피라미드를 픽셀 열로 다시 묶음. 열 경계에 걸친 최상세 버킷만 원본으로 나눈다.
+   그 원본까지 예산 안이면 정확하고, 넘으면 최상세 버킷 하나 폭 이내의 근사로 `exact=false`를 붙인다.
 
 ---
 
@@ -199,6 +200,9 @@ curl -X POST http://localhost:8000/api/v1/charts/render -H 'Content-Type: applic
 | `CORS_ALLOW_ORIGINS` | `["http://localhost:3000"]` | 허용할 브라우저 출처 |
 | `RATE_LIMIT_PER_MINUTE` | 120 | API 키(없으면 IP)별 분당 요청 수 |
 | `BLOCK_PRIVATE_EGRESS` | `true` | 원격 커넥터가 사설·루프백 주소에 접속하지 못하게 막는다 (SSRF 방지) |
+| `CONNECTOR_TIMEOUT` | 300 | 원격 다운로드·쿼리 한 번의 제한 시간 (초) |
+| `LIVE_EVENTS` | `redis` | 실시간 추가 알림을 워커끼리 나누는 방법. `redis`(pub/sub, 워커 여러 개) 또는 `local` |
+| `TILE_CACHE_TTL` / `SESSION_TTL` | 3600 / 900 | Redis 타일·세션 유지 시간 (초) |
 | `LOCAL_INGEST_ROOT` | 비움 | `file://` 인제스트가 읽을 수 있는 디렉터리. 비우면 `file://` 거부 |
 
 전체 목록과 설명은 [src/webchart/config.py](src/webchart/config.py)에 있다.
@@ -212,8 +216,13 @@ curl -X POST http://localhost:8000/api/v1/charts/render -H 'Content-Type: applic
 - **인증을 켠다.** `WEBCHART_API_KEYS`가 비어 있으면 누구나 업로드·조회·삭제할 수 있다.
 - **원격 커넥터**는 서버가 대신 외부에 접속하는 기능이다.
   - 기본으로 사설·루프백·링크로컬 주소를 막는다(`BLOCK_PRIVATE_EGRESS`). 내부 MinIO처럼 의도한 경우에만 끈다.
-  - HTTP 리다이렉트가 다른 호스트로 가면 인증 헤더를 보내지 않는다.
+  - HTTP·FTP·SFTP·ClickHouse는 검사한 IP로만 접속한다(DNS 리바인딩 방지). S3 사용자 엔드포인트와 SMB는
+    라이브러리가 접속 주소를 고정할 수 없어(SMB는 Kerberos가 호스트 이름을 쓴다) 접속 때 DNS를 다시 푼다.
+    이 둘은 신뢰하는 주소에만 쓴다.
+  - 받는 양이 `MAX_UPLOAD_SIZE`를 넘는 순간 끊는다. 서버가 알려 준 크기를 믿지 않는다.
+  - HTTP 리다이렉트가 다른 호스트로 가면 인증 헤더를 보내지 않는다. FTP 데이터 연결은 PASV 응답의 주소가 아니라 접속한 서버로 연다.
 - **`file://` 인제스트**는 `LOCAL_INGEST_ROOT`로 지정한 디렉터리 안만 읽는다(기본 꺼짐).
+- **인증을 끈 세션**(`API_KEYS` 비움)은 세션 ID(UUID)만 알면 누구나 열고 닫을 수 있다. 인증을 끈 상태는 모든 기능이 공개된 개발용이다.
 - **브라우저 WebSocket**은 헤더를 붙일 수 없어 API 키를 `?api_key=` 쿼리로도 받는다. 이 값은 프록시·접근 로그에 남을 수 있으니, 공개 환경에서는 로그에서 쿼리를 지우거나 짧게 쓰는 키를 쓴다.
 - **임베드·타일 URL**에는 API 키 대신 차트 하나에만 유효한 HMAC 토큰이 붙는다. 키를 바꾸면 기존 URL이 무효가 되므로 운영에서는 `EMBED_SECRET`을 따로 지정한다.
 
@@ -229,7 +238,7 @@ curl -X POST http://localhost:8000/api/v1/charts/render -H 'Content-Type: applic
 | 피라미드 빌드 | 2.3s (420MB) | 17.8s (1.9GB) |
 | 타일 z=0 (피라미드) | 0.03s | 0.03s |
 | 깊은 줌 타일 (원본 범위 읽기) | 0.02s | 0.03s |
-| 정적 렌더 전체 범위 | 1.2s (원본, exact) | 0.11s (피라미드, 근사) / 5.6s (원본, exact) |
+| 정적 렌더 전체 범위 | 1.2s (원본, exact) | 0.11s (피라미드) / 5.6s (원본, exact) |
 | 타일 64장 프레임 (그리기 프로세스 8) | — | 0.28s |
 
 1억 행에서 뷰어로 휠 줌·드래그 이동을 2.8초 동안 40번(viewport 요청 72개) 몰아 보내도, 그 사이 프레임은 모두
