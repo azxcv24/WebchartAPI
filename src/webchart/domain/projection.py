@@ -320,10 +320,20 @@ def add_points(density: DensityGrid, x: FloatArray, y: FloatArray) -> None:
         (column >= 0) & (column < density.grid.bucket_count) & (row >= 0) & (row < density.rows)
     )
     flat = row[inside] * density.grid.bucket_count + column[inside]
-    # 칠해진 셀에만 더한다. bincount(minlength=전체 셀 수)는 점이 적어도 격자 전체
-    # (피라미드 빌드 때 수백만 셀)를 매번 새로 만들고 더해 매우 느리다.
-    cells, counts = np.unique(flat, return_counts=True)
-    density.counts.reshape(-1)[cells] += counts
+    target = density.counts.reshape(-1)
+    if target.size <= _BINCOUNT_CELLS_PER_POINT * len(flat):
+        # 격자가 점 수에 비해 작으면(타일 하나) 격자 전체를 한 번에 세는 쪽이 빠르다
+        target += np.bincount(flat, minlength=target.size)
+    else:
+        # 격자가 크면(피라미드 빌드 때 수백만 셀) 칠해진 셀에만 더한다. bincount는 점이
+        # 적어도 격자 전체를 매번 새로 만들어 더하므로 느리다.
+        cells, counts = np.unique(flat, return_counts=True)
+        target[cells] += counts
+
+
+# add_points가 bincount를 쓰는 기준: 셀 수 ≤ 점 수 × 이 값. 측정상 손익분기는 30배 안팎이다
+# (13만 점: 26만 셀 bincount 0.7ms / unique 5.7ms, 1,677만 셀 86ms / 10ms).
+_BINCOUNT_CELLS_PER_POINT = 16
 
 
 def normalize_density(counts: npt.NDArray[np.int64], how: str) -> FloatArray:
