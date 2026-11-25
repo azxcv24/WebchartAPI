@@ -190,7 +190,7 @@ def _grouped(window: SeriesWindow, columns_per_group: int) -> tuple[BucketStats,
             f"버킷 수 {grid.bucket_count}가 묶음 크기 {columns_per_group}로 나눠떨어지지 않는다"
         )
     starts = np.arange(0, grid.bucket_count, columns_per_group, dtype=np.int64)
-    left_x = grid.origin + starts * grid.bucket_width
+    left_x = np.asarray(grid.origin + starts * grid.bucket_width, dtype=np.float64)
     return window.stats.regroup(starts), left_x
 
 
@@ -198,7 +198,7 @@ def envelope_band(window: SeriesWindow) -> Band:
     """band 투영: 값이 있는 픽셀 열마다 [min, max]."""
     grid = window.grid
     filled = np.flatnonzero(window.stats.has_values)
-    left_x = grid.origin + filled * grid.bucket_width
+    left_x = np.asarray(grid.origin + filled * grid.bucket_width, dtype=np.float64)
     return Band(
         left_x=left_x,
         right_x=left_x + grid.bucket_width,
@@ -348,10 +348,10 @@ def normalize_density(counts: npt.NDArray[np.int64], how: str) -> FloatArray:
     if not occupied.any():
         return np.zeros_like(values)
     if how == "linear":
-        linear: FloatArray = values / values.max()
+        linear: FloatArray = values / np.max(values)
         return linear
     if how == "log":
-        logged: FloatArray = np.log1p(values) / np.log1p(values.max())
+        logged: FloatArray = np.log1p(values) / np.log1p(np.max(values))
         return logged
     if how == "eq_hist":
         distinct, inverse = np.unique(counts[occupied], return_inverse=True)

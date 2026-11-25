@@ -135,7 +135,7 @@ class BucketStats:
         """모든 버킷의 y 최솟값·최댓값. 유효 점이 없으면 None."""
         if not self.has_values.any():
             return None
-        return float(self.min_y.min()), float(self.max_y.max())
+        return float(np.min(self.min_y)), float(np.max(self.max_y))
 
     # --- 합치기 -------------------------------------------------------------
 

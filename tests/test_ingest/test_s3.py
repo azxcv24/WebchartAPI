@@ -24,6 +24,7 @@ def test_parse_rejects_missing_key():
 
 
 def test_minio_client_uses_path_style_and_endpoint():
+    pytest.importorskip("boto3")  # 선택 의존성 ([connectors])
     spec = RemoteSourceSpec(
         protocol="minio",
         uri="minio://b/k/data.csv",
@@ -36,6 +37,7 @@ def test_minio_client_uses_path_style_and_endpoint():
 
 
 def test_aws_client_defaults_to_auto_addressing():
+    pytest.importorskip("boto3")
     spec = RemoteSourceSpec(
         protocol="s3",
         uri="s3://b/k/data.csv",
